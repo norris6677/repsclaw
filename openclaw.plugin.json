@@ -1,0 +1,24 @@
+{
+  "id": "repsclaw",
+  "name": "Repsclaw Healthcare Plugin",
+  "version": "1.0.0",
+  "description": "Healthcare data integration with FDA, PubMed, Clinical Trials, and Medical Terminology APIs",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "FDA_API_KEY": {
+        "type": "string",
+        "description": "FDA API Key for drug information"
+      },
+      "PUBMED_API_KEY": {
+        "type": "string",
+        "description": "PubMed/NCBI API Key"
+      },
+      "NCBI_API_KEY": {
+        "type": "string",
+        "description": "NCBI API Key (alternative to PUBMED_API_KEY)"
+      }
+    }
+  }
+}
