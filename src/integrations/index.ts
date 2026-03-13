@@ -5,7 +5,6 @@ export { PineconeAdapter } from './vector/pinecone.adapter';
 export { PubMedClient } from './api/pubmed.client';
 export { CNKIClient } from './api/cnki.client';
 export { FDAClient } from './api/fda.client';
-export { HealthTopicsClient } from './api/health-topics.client';
 export { ClinicalTrialsClient } from './api/clinical-trials.client';
 export { MedicalTerminologyClient } from './api/medical-terminology.client';
 export { MedRxivClient } from './api/medrxiv.client';

@@ -101,7 +101,16 @@ export class MedicalTerminologyClient {
         },
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      let message = 'Unknown error';
+      if (axios.isAxiosError(error)) {
+        message = `HTTP ${error.response?.status}: ${error.response?.statusText || error.message}`;
+        if (error.response?.data) {
+          message += ` - ${JSON.stringify(error.response.data).substring(0, 200)}`;
+        }
+      } else if (error instanceof Error) {
+        message = error.message;
+      }
+      console.error('Medical Terminology lookup error:', message);
       return { status: 'error', error_message: `Error looking up ICD-10 code: ${message}` };
     }
   }

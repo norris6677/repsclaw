@@ -1,7 +1,6 @@
 import { IExternalAPIConfig, ICrawledPage } from '../../types';
 import { FDAClient } from './fda.client';
 import { PubMedClient } from './pubmed.client';
-import { HealthTopicsClient } from './health-topics.client';
 import { ClinicalTrialsClient } from './clinical-trials.client';
 import { MedicalTerminologyClient } from './medical-terminology.client';
 import { MedRxivClient } from './medrxiv.client';
@@ -18,7 +17,6 @@ import { NciBookshelfClient } from './nci-bookshelf.client';
 export class HealthAPIService {
   private fdaClient: FDAClient;
   private pubmedClient: PubMedClient;
-  private healthTopicsClient: HealthTopicsClient;
   private clinicalTrialsClient: ClinicalTrialsClient;
   private medicalTerminologyClient: MedicalTerminologyClient;
   private medrxivClient: MedRxivClient;
@@ -27,7 +25,6 @@ export class HealthAPIService {
   constructor(config?: {
     fda?: Partial<IExternalAPIConfig>;
     pubmed?: Partial<IExternalAPIConfig>;
-    healthTopics?: Partial<IExternalAPIConfig>;
     clinicalTrials?: Partial<IExternalAPIConfig>;
     medicalTerminology?: Partial<IExternalAPIConfig>;
     medrxiv?: Partial<IExternalAPIConfig>;
@@ -45,12 +42,6 @@ export class HealthAPIService {
       baseUrl: 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils',
       apiKey: config?.pubmed?.apiKey,
       rateLimit: config?.pubmed?.rateLimit,
-    });
-
-    this.healthTopicsClient = new HealthTopicsClient({
-      source: 'health_topics',
-      baseUrl: 'https://odphp.health.gov/myhealthfinder/api/v4',
-      rateLimit: config?.healthTopics?.rateLimit,
     });
 
     this.clinicalTrialsClient = new ClinicalTrialsClient({
@@ -124,28 +115,6 @@ export class HealthAPIService {
     openAccess?: boolean;
   }): Promise<ICrawledPage[]> {
     return this.pubmedClient.searchAsPages(params);
-  }
-
-  // ==================== Health Topics ====================
-
-  /**
-   * 获取健康主题信息
-   */
-  async getHealthTopics(params: {
-    topic: string;
-    language?: 'en' | 'es';
-  }) {
-    return this.healthTopicsClient.getHealthTopics(params);
-  }
-
-  /**
-   * 搜索健康主题
-   */
-  async searchHealthTopics(params: {
-    query: string;
-    language?: 'en' | 'es';
-  }): Promise<ICrawledPage[]> {
-    return this.healthTopicsClient.search(params);
   }
 
   // ==================== Clinical Trials ====================
@@ -279,14 +248,14 @@ export class HealthAPIService {
    */
   async searchAll(params: {
     query: string;
-    sources?: Array<'fda' | 'pubmed' | 'health_topics' | 'clinical_trials' | 
+    sources?: Array<'fda' | 'pubmed' | 'clinical_trials' | 
                      'medical_terminology' | 'medrxiv' | 'ncbi_bookshelf'>;
     maxResults?: number;
   }): Promise<Record<string, ICrawledPage[]>> {
     const { query, sources, maxResults = 10 } = params;
     
     const allSources = [
-      'fda', 'pubmed', 'health_topics', 'clinical_trials', 
+      'fda', 'pubmed', 'clinical_trials', 
       'medical_terminology', 'medrxiv', 'ncbi_bookshelf'
     ] as const;
     
@@ -308,14 +277,6 @@ export class HealthAPIService {
         this.searchPubMedAsPages({ query, maxResults })
           .then(pages => { results.pubmed = pages; })
           .catch(() => { results.pubmed = []; })
-      );
-    }
-
-    if (targetSources.includes('health_topics')) {
-      searchPromises.push(
-        this.searchHealthTopics({ query })
-          .then(pages => { results.health_topics = pages; })
-          .catch(() => { results.health_topics = []; })
       );
     }
 
@@ -360,7 +321,6 @@ export class HealthAPIService {
 
   get fda() { return this.fdaClient; }
   get pubmed() { return this.pubmedClient; }
-  get healthTopics() { return this.healthTopicsClient; }
   get clinicalTrials() { return this.clinicalTrialsClient; }
   get medicalTerminology() { return this.medicalTerminologyClient; }
   get medrxiv() { return this.medrxivClient; }

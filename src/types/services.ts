@@ -151,7 +151,6 @@ export type DataSource =
   | 'cnki' 
   | 'arxiv' 
   | 'fda'
-  | 'health_topics'
   | 'clinical_trials'
   | 'medical_terminology'
   | 'medrxiv'

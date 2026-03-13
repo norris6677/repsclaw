@@ -9,7 +9,6 @@ import { RAGService, ComplianceService, CrawlerService } from './services';
  * 提供功能：
  * - FDA 药品信息查询
  * - PubMed 文献搜索
- * - 健康主题查询
  * - 临床试验搜索
  * - 医学术语查询 (ICD-10)
  * - medRxiv 预印本搜索
@@ -84,7 +83,6 @@ export default class RepsclawPlugin implements IOpenClawPlugin {
       endpoints: [
         '/api/repsclaw/health/fda',
         '/api/repsclaw/health/pubmed',
-        '/api/repsclaw/health/topics',
         '/api/repsclaw/health/trials',
         '/api/repsclaw/health/icd10',
         '/api/repsclaw/health/medrxiv',
@@ -104,13 +102,6 @@ export default class RepsclawPlugin implements IOpenClawPlugin {
       const { q, limit = 10 } = request.query as { q: string; limit?: number };
       if (!this.healthAPI) throw new Error('Health API not initialized');
       return this.healthAPI.searchPubMed({ query: q, maxResults: limit });
-    });
-
-    // 健康主题查询
-    server.get('/api/repsclaw/health/topics', async (request) => {
-      const { topic, lang = 'en' } = request.query as { topic: string; lang?: 'en' | 'es' };
-      if (!this.healthAPI) throw new Error('Health API not initialized');
-      return this.healthAPI.getHealthTopics({ topic, language: lang });
     });
 
     // 临床试验搜索

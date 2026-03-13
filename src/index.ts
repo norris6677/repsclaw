@@ -4,7 +4,6 @@
  * 一个为 OpenClaw 提供的医疗数据集成插件，包含以下 API：
  * - FDA Drug Information
  * - PubMed Research
- * - Health Topics
  * - Clinical Trials
  * - Medical Terminology (ICD-10)
  * - medRxiv Search
