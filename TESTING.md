@@ -2,6 +2,15 @@
 
 本测试套件用于验证 `repsclaw` 插件是否能成功通过 npm install 自动挂载到 OpenClaw。
 
+## ⚠️ 绝对准则
+
+**禁止使用软链接部署插件**
+
+在测试过程中，**绝对不要使用软链接（symlink）**部署插件。必须使用文件复制方式。
+
+- 软链接会导致 `plugin not found` 错误
+- 测试脚本已改为使用 `fs.copy()` 而非 `fs.symlink()`
+
 ## 快速开始
 
 ```bash
@@ -22,7 +31,7 @@ npm run test:postinstall  # postinstall 钩子测试
 
 **测试内容：**
 - 自动探测 OpenClaw 安装路径
-- 创建软链接（Windows: junction, Linux/Mac: symlink）
+- 文件复制到 OpenClaw 扩展目录（禁止使用软链接）
 - 验证插件项目结构
 - 模拟 OpenClaw 插件扫描
 - 重复安装处理
@@ -88,8 +97,10 @@ echo '{"version":"1.0.0"}' > ~/.openclaw/openclaw.json
 # 3. 运行安装脚本
 npm run setup:openclaw
 
-# 4. 验证链接
+# 4. 验证部署（应为普通目录，不是软链接）
 ls -la ~/.openclaw/extensions/repsclaw
+# 应显示：drwxrwxr-x repsclaw
+# 不应显示：lrwxrwxrwx repsclaw -> /path
 
 # 5. 验证插件内容
 cat ~/.openclaw/extensions/repsclaw/package.json
@@ -141,7 +152,7 @@ ls -la ~/.openclaw/extensions/
 测试报告
 ════════════════════════════════════════════════════
 ✔ 自动探测
-✔ 软链接创建
+✔ 文件复制
 ✔ 插件验证
 ✔ OpenClaw 扫描
 ✔ 重复安装
@@ -155,27 +166,25 @@ ls -la ~/.openclaw/extensions/
 
 ## 故障排除
 
-### 测试失败：软链接创建失败
+### 测试失败：文件复制失败
 
 **问题原因：**
-- Windows 未启用开发者模式或未以管理员身份运行
-- Linux/Mac 文件系统不支持符号链接
+- 目标目录权限不足
+- 磁盘空间不足
+- 文件被占用
 
 **解决方案：**
 
-Windows:
-```powershell
-# 启用开发者模式（PowerShell 管理员）
-reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
-```
-
-Linux/Mac:
 ```bash
-# 检查 /tmp 是否支持符号链接
-mount | grep /tmp
+# 检查目标目录权限
+ls -la ~/.openclaw/extensions/
 
-# 如果使用的是 noexec，改用其他目录
-TMPDIR=$HOME/tmp npm run test:mount
+# 修复权限
+chmod 755 ~/.openclaw/extensions
+
+# 手动清理后重试
+rm -rf ~/.openclaw/extensions/repsclaw
+npm run setup:openclaw
 ```
 
 ### 测试失败：postinstall 未触发
@@ -260,9 +269,7 @@ ls -la /tmp/openclaw-test-*
 | 功能 | 简化测试 | 集成测试 | postinstall |
 |------|----------|----------|-------------|
 | 自动探测 | ✅ | ✅ | ✅ |
-| 软链接创建 | ✅ | ✅ | ✅ |
-| Windows junction | ✅ | ✅ | ✅ |
-| Linux/Mac symlink | ✅ | ✅ | ✅ |
+| 文件复制 | ✅ | ✅ | ✅ |
 | 插件结构验证 | ✅ | ✅ | ✅ |
 | 接口实现检查 | ❌ | ✅ | ❌ |
 | npm install 触发 | ❌ | ❌ | ✅ |

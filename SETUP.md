@@ -1,8 +1,31 @@
 # OpenClaw 插件自动安装说明
 
+## ⚠️ 绝对准则
+
+### 1. 禁止使用软链接部署插件
+
+在安装插件和进行完整集成测试时，**绝对不要使用软链接（symlink）**。必须使用文件复制方式部署。
+
+原因：
+- 软链接会导致 OpenClaw 加载时出现 `plugin not found` 错误
+- 全局配置 `~/.openclaw/openclaw.json` 与软链接指向的文件状态不同步
+- 必须使用普通目录才能确保插件正确加载
+
+### 2. 必须使用方案 A（Feishu 模式）
+
+插件部署必须对齐 Feishu 插件的工作模式：
+
+- 使用 `package.json` 中的 `openclaw.extensions` 指定入口
+- **禁止**在 `openclaw.plugin.json` 中使用 `main` 字段
+- 完整复制部署（包括 `node_modules`）
+
+详见 `DEPLOYMENT.md`
+
+---
+
 ## 自动安装
 
-本插件支持在安装时自动链接到 OpenClaw。
+本插件支持在安装时自动复制到 OpenClaw。
 
 ### 工作原理
 
@@ -14,7 +37,9 @@
    - 常见安装路径 (`/usr/local/share/openclaw`, `/opt/openclaw`)
    - 环境变量 (`OPENCLAW_HOME`, `OPENCLAW_PATH`)
 
-2. **自动链接** - 找到后会在 `~/.openclaw/extensions/` 创建软链接
+2. **文件复制** - 找到后会将插件文件复制到 `~/.openclaw/extensions/`
+   - 只复制必要文件：`dist/`、`openclaw.plugin.json`、`package.json`
+   - 不复制 `node_modules/`、`src/` 等开发依赖
 
 3. **交互模式** - 如果自动探测失败，会提示用户手动输入路径
 
@@ -26,7 +51,7 @@
 npm install
 ```
 
-安装完成后会自动尝试链接到 OpenClaw。
+安装完成后会自动尝试复制到 OpenClaw。
 
 #### 手动运行设置
 
@@ -40,7 +65,7 @@ npx tsx src/cli/setup.ts
 
 #### 跳过自动安装
 
-如果需要在安装时跳过链接步骤：
+如果需要在安装时跳过复制步骤：
 
 ```bash
 # 方式 1: 设置环境变量
@@ -61,16 +86,18 @@ CI=true npm install
 
 ### 平台支持
 
-- **Linux/macOS**: 使用符号链接 (symlink)
-- **Windows**: 使用目录链接 (junction)
+- **Linux/macOS**: 使用文件复制
+- **Windows**: 使用文件复制
 
 ### 故障排除
 
 #### 安装后插件未加载
 
-1. 检查链接是否存在：
+1. 检查是否为普通目录（不是软链接）：
    ```bash
    ls -la ~/.openclaw/extensions/
+   # 正确：drwxrwxr-x repsclaw
+   # 错误：lrwxrwxrwx repsclaw -> /path
    ```
 
 2. 手动运行设置：
@@ -99,6 +126,23 @@ chmod 755 ~/.openclaw/extensions
 
 ```
 ~/.openclaw/extensions/
-├── feishu/           # 其他插件
-└── repsclaw -> /path/to/repsclaw   # 本插件的软链接
+├── feishu/                    # 其他插件
+└── repsclaw/                  # 本插件（普通目录，不是软链接）
+    ├── dist/
+    │   └── index.js
+    ├── openclaw.plugin.json
+    └── package.json
+```
+
+### 验证安装
+
+```bash
+# 检查是否为普通目录
+ls -la ~/.openclaw/extensions/repsclaw
+# 应显示：drwxrwxr-x ... repsclaw
+# 不应显示：lrwxrwxrwx ... repsclaw -> /path
+
+# 检查关键文件是否存在
+ls ~/.openclaw/extensions/repsclaw/dist/index.js
+ls ~/.openclaw/extensions/repsclaw/openclaw.plugin.json
 ```

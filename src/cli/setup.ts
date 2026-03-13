@@ -2,7 +2,11 @@
 /**
  * OpenClaw Plugin Setup Script
  * 
- * 该脚本在 npm postinstall 阶段运行，自动将本插件链接到 OpenClaw 的扩展目录
+ * 该脚本在 npm postinstall 阶段运行，自动将本插件复制到 OpenClaw 的扩展目录
+ * 
+ * 【绝对准则】禁止在本项目中使用软链接（symlink）部署插件
+ * - 原因：软链接会导致 OpenClaw 加载时出现 "plugin not found" 错误
+ * - 替代方案：始终使用文件复制（fs.copy）方式部署
  */
 
 import * as fs from 'fs-extra';
@@ -194,54 +198,114 @@ function getExtensionsDir(openclawPath: string): string {
 }
 
 /**
- * 创建软链接
+ * 复制插件文件到目标目录
+ * 【绝对准则】禁止使用软链接，必须使用文件复制
+ * 【方案 A】对齐 Feishu 模式：复制完整项目结构（包括 node_modules）
  */
-async function createSymlink(target: string, linkPath: string): Promise<boolean> {
+async function copyPluginFiles(sourceDir: string, targetDir: string): Promise<boolean> {
   try {
-    // 确保父目录存在
-    await fs.ensureDir(path.dirname(linkPath));
+    print('复制插件文件...', 'info');
     
-    // 如果链接已存在，先删除
-    if (await fs.pathExists(linkPath)) {
-      const stat = await fs.lstat(linkPath);
-      if (stat.isSymbolicLink() || stat.isDirectory()) {
-        await fs.remove(linkPath);
-        print('已移除现有链接', 'info');
+    // 确保父目录存在
+    await fs.ensureDir(path.dirname(targetDir));
+    
+    // 如果目标已存在，先删除
+    if (await fs.pathExists(targetDir)) {
+      const stat = await fs.lstat(targetDir);
+      // 检查是否是软链接，如果是则删除
+      if (stat.isSymbolicLink()) {
+        print('发现现有的软链接，正在移除...', 'warning');
+        await fs.unlink(targetDir);
+      } else if (stat.isDirectory()) {
+        await fs.remove(targetDir);
+        print('已移除现有目录', 'info');
       }
     }
     
-    // 根据操作系统创建不同类型的链接
-    if (isWindows) {
-      // Windows 使用 junction（目录链接）
-      await fs.ensureDir(target);
-      await fs.symlink(target, linkPath, 'junction');
-    } else {
-      // Linux/Mac 使用符号链接
-      await fs.ensureSymlink(target, linkPath, 'dir');
+    // 创建新的目标目录
+    await fs.ensureDir(targetDir);
+    
+    // 【方案 A】复制关键文件和目录（完整复制，对齐 Feishu 模式）
+    const filesToCopy = [
+      'index.ts',              // 入口文件（必须在根目录）
+      'package.json',          // 包含 openclaw.extensions 配置
+      'openclaw.plugin.json',  // 插件配置（不包含 main 字段）
+      'tsconfig.json',         // TypeScript 配置
+      'node_modules',          // 完整依赖（必须复制）
+      'src',                   // TypeScript 源码
+    ];
+    
+    for (const file of filesToCopy) {
+      const sourcePath = path.join(sourceDir, file);
+      const targetPath = path.join(targetDir, file);
+      
+      if (await fs.pathExists(sourcePath)) {
+        await fs.copy(sourcePath, targetPath);
+        print(`  复制: ${file}`, 'info');
+      } else {
+        print(`  跳过: ${file} (不存在)`, 'warning');
+      }
     }
     
     return true;
   } catch (error) {
-    print(`创建链接失败: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    print(`复制文件失败: ${error instanceof Error ? error.message : String(error)}`, 'error');
     return false;
   }
 }
 
 /**
- * 验证链接是否创建成功
+ * 验证复制是否成功
+ * 【方案 A】验证 Feishu 模式的要求
  */
-async function verifySymlink(linkPath: string): Promise<boolean> {
+async function verifyCopy(targetDir: string): Promise<boolean> {
   try {
-    const stat = await fs.lstat(linkPath);
-    const isLink = stat.isSymbolicLink() || stat.isDirectory();
+    // 检查关键文件是否存在（方案 A）
+    const requiredFiles = [
+      'index.ts',              // 入口文件
+      'package.json',          // 包含 openclaw.extensions
+      'openclaw.plugin.json',  // 插件配置
+      'node_modules',          // 依赖目录
+    ];
     
-    if (isLink) {
-      const realPath = await fs.realpath(linkPath);
-      print(`链接验证成功 -> ${realPath}`, 'success');
-      return true;
+    for (const file of requiredFiles) {
+      const filePath = path.join(targetDir, file);
+      if (!(await fs.pathExists(filePath))) {
+        print(`缺少必需文件/目录: ${file}`, 'error');
+        return false;
+      }
     }
-    return false;
-  } catch {
+    
+    // 验证 openclaw.plugin.json 格式
+    const pluginJsonPath = path.join(targetDir, 'openclaw.plugin.json');
+    const pluginJson = await fs.readJson(pluginJsonPath);
+    
+    if (!pluginJson.id) {
+      print('openclaw.plugin.json 缺少必需字段 (id)', 'error');
+      return false;
+    }
+    
+    // 【方案 A】检查是否错误地包含了 main 字段
+    if (pluginJson.main) {
+      print('警告: openclaw.plugin.json 包含 main 字段，这会导致加载失败', 'warning');
+      print('请删除 main 字段，使用 package.json 中的 openclaw.extensions 替代', 'warning');
+      return false;
+    }
+    
+    // 验证 package.json 包含 openclaw.extensions
+    const packageJsonPath = path.join(targetDir, 'package.json');
+    const packageJson = await fs.readJson(packageJsonPath);
+    
+    if (!packageJson.openclaw || !packageJson.openclaw.extensions) {
+      print('package.json 缺少 openclaw.extensions 配置', 'error');
+      print('请添加: "openclaw": { "extensions": ["./index.ts"] }', 'error');
+      return false;
+    }
+    
+    print(`验证成功: ${targetDir}`, 'success');
+    return true;
+  } catch (error) {
+    print(`验证失败: ${error instanceof Error ? error.message : String(error)}`, 'error');
     return false;
   }
 }
@@ -280,27 +344,28 @@ async function interactiveSetup(): Promise<boolean> {
     
     const extensionsDir = getExtensionsDir(resolvedPath);
     const projectDir = getCurrentProjectDir();
-    const linkName = path.basename(projectDir);
-    const linkPath = path.join(extensionsDir, linkName);
+    const pluginName = path.basename(projectDir);
+    const targetDir = path.join(extensionsDir, pluginName);
     
-    print(`\n准备创建链接:`, 'info');
-    print(`  目标: ${projectDir}`, 'info');
-    print(`  链接: ${linkPath}`, 'info');
+    print(`\n准备安装插件:`, 'info');
+    print(`  源目录: ${projectDir}`, 'info');
+    print(`  目标: ${targetDir}`, 'info');
+    print(`  方式: 文件复制（禁止使用软链接）`, 'warning');
     
-    const confirmed = await confirm(rl, '确认创建链接？');
+    const confirmed = await confirm(rl, '确认安装？');
     if (!confirmed) {
       print('用户取消操作', 'warning');
       return false;
     }
     
-    const success = await createSymlink(projectDir, linkPath);
+    const success = await copyPluginFiles(projectDir, targetDir);
     
-    if (success && (await verifySymlink(linkPath))) {
+    if (success && (await verifyCopy(targetDir))) {
       print('\n' + '═'.repeat(50), 'success');
       print('✨ 插件安装成功！', 'success');
       print('═'.repeat(50) + '\n', 'success');
-      print(`插件名称: ${chalk.cyan(linkName)}`, 'info');
-      print(`安装位置: ${chalk.cyan(linkPath)}`, 'info');
+      print(`插件名称: ${chalk.cyan(pluginName)}`, 'info');
+      print(`安装位置: ${chalk.cyan(targetDir)}`, 'info');
       print('\n重启 OpenClaw 后插件将自动加载', 'info');
       return true;
     }
@@ -317,21 +382,22 @@ async function interactiveSetup(): Promise<boolean> {
 async function autoInstall(openclawPath: string): Promise<boolean> {
   const extensionsDir = getExtensionsDir(openclawPath);
   const projectDir = getCurrentProjectDir();
-  const linkName = path.basename(projectDir);
-  const linkPath = path.join(extensionsDir, linkName);
+  const pluginName = path.basename(projectDir);
+  const targetDir = path.join(extensionsDir, pluginName);
   
-  print(`\n创建插件链接:`, 'info');
-  print(`  目标: ${chalk.gray(projectDir)}`, 'info');
-  print(`  链接: ${chalk.gray(linkPath)}`, 'info');
+  print(`\n安装插件:`, 'info');
+  print(`  源目录: ${chalk.gray(projectDir)}`, 'info');
+  print(`  目标: ${chalk.gray(targetDir)}`, 'info');
+  print(`  方式: ${chalk.yellow('文件复制（禁止使用软链接）')}`, 'warning');
   
-  const success = await createSymlink(projectDir, linkPath);
+  const success = await copyPluginFiles(projectDir, targetDir);
   
-  if (success && (await verifySymlink(linkPath))) {
+  if (success && (await verifyCopy(targetDir))) {
     print('\n' + '═'.repeat(50), 'success');
     print('✨ 插件自动安装成功！', 'success');
     print('═'.repeat(50) + '\n', 'success');
-    print(`插件名称: ${chalk.cyan(linkName)}`, 'info');
-    print(`安装位置: ${chalk.cyan(linkPath)}`, 'info');
+    print(`插件名称: ${chalk.cyan(pluginName)}`, 'info');
+    print(`安装位置: ${chalk.cyan(targetDir)}`, 'info');
     print('\n重启 OpenClaw 后插件将自动加载', 'info');
     return true;
   }
