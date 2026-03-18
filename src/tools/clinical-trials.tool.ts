@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { ClinicalTrialsClient } from '../integrations/api/clinical-trials.client';
 import { createLogger } from '../utils/plugin-logger';
 
@@ -34,33 +35,17 @@ export type ClinicalTrialsParameters = z.infer<typeof ClinicalTrialsParametersSc
 export const CLINICAL_TRIALS_TOOL_NAME = 'clinical_trials_search';
 
 /**
- * 临床试验搜索工具定义
+ * 临床试验搜索工具定义 (JSON Schema 格式)
  */
 export const ClinicalTrialsTool = {
   name: CLINICAL_TRIALS_TOOL_NAME,
-  description: `搜索 ClinicalTrials.gov 临床试验数据库 / Search ClinicalTrials.gov database
-
-适用场景：
-- 用户询问某种疾病的临床试验
-- 查询特定试验阶段的招募信息
-- 了解某个地区的试验地点
-
-返回内容：
-- 试验基本信息（NCT ID、标题、阶段）
-- 招募状态
-- 试验地点
-- 入组条件摘要`,
-  parameters: ClinicalTrialsParametersSchema,
-  examples: [
-    {
-      input: { condition: "肺癌", status: "recruiting", maxResults: 5 },
-      description: "搜索招募中的肺癌临床试验",
-    },
-    {
-      input: { condition: "糖尿病", phase: ["PHASE2", "PHASE3"], location: "北京" },
-      description: "搜索北京地区的 II-III 期糖尿病试验",
-    },
-  ],
+  description: "搜索 ClinicalTrials.gov 临床试验数据库 / Search ClinicalTrials.gov database",
+  parameters: zodToJsonSchema(ClinicalTrialsParametersSchema) as {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  },
 };
 
 // 全局客户端实例（单例模式）

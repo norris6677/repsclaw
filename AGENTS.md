@@ -1,5 +1,38 @@
 # RepsClaw Agent 使用指南
 
+## 🚨 重要：开发目录规范 ‼️
+
+### 开发目录
+
+**所有代码开发必须在 `/home/tony203/repsclaw/` 进行**
+
+```
+/home/tony203/
+└── repsclaw/          ← ✅ 唯一开发目录
+    ├── src/
+    ├── index.ts
+    └── ...
+```
+
+### 绝对禁止
+
+❌ **严禁在 `~/.openclaw/extensions/repsclaw/` 中进行任何开发或修改**
+
+- 这是 OpenClaw 运行时加载插件的目录
+- 在此目录修改可能导致插件加载异常、配置丢失
+- 所有开发工作必须在 `/home/tony203/repsclaw/` 完成
+
+### 正确的工作流程
+
+```
+1. 开发 → /home/tony203/repsclaw/ (修改代码)
+2. 测试 → /home/tony203/repsclaw/ (运行测试)
+3. 构建 → npm run build (在开发目录执行)
+4. 部署 → ./deploy.sh (同步到插件目录)
+```
+
+---
+
 ## 📝 工作要求
 
 ### 1. 测试范围要求

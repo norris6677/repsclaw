@@ -1,0 +1,9 @@
+{
+	"id": "omPVXhaUWbBabPj",
+	"json": "{\"id\":\"omPVXhaUWbBabPj\",\"url\":\"https://www.nmpa.gov.cn/xxgk/zcwj/zcjd/\",\"uniqueKey\":\"https://www.nmpa.gov.cn/xxgk/zcwj/zcjd\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":0,\"errorMessages\":[],\"headers\":{},\"userData\":{\"source\":{\"name\":\"国家药监局\",\"baseUrl\":\"https://www.nmpa.gov.cn\",\"newsUrl\":\"https://www.nmpa.gov.cn/xxgk/zcwj/zcjd/\",\"listSelector\":\".list li, .news-list li\",\"titleSelector\":\"a\",\"dateSelector\":\".date, span.time\"}}}",
+	"method": "GET",
+	"orderNo": 1773843460790,
+	"retryCount": 0,
+	"uniqueKey": "https://www.nmpa.gov.cn/xxgk/zcwj/zcjd",
+	"url": "https://www.nmpa.gov.cn/xxgk/zcwj/zcjd/"
+}

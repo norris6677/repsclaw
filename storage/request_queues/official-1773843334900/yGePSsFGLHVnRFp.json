@@ -1,0 +1,9 @@
+{
+	"id": "yGePSsFGLHVnRFp",
+	"json": "{\"id\":\"yGePSsFGLHVnRFp\",\"url\":\"https://www.nhc.gov.cn/xcs/s3582new/\",\"uniqueKey\":\"https://www.nhc.gov.cn/xcs/s3582new\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":0,\"errorMessages\":[],\"headers\":{},\"userData\":{\"source\":{\"name\":\"国家卫健委\",\"baseUrl\":\"https://www.nhc.gov.cn\",\"newsUrl\":\"https://www.nhc.gov.cn/xcs/s3582new/\",\"listSelector\":\".zxxx_list li, .list-container li, ul li\",\"titleSelector\":\"a\",\"dateSelector\":\"span.date, .time, em\"}}}",
+	"method": "GET",
+	"orderNo": 1773843334923,
+	"retryCount": 0,
+	"uniqueKey": "https://www.nhc.gov.cn/xcs/s3582new",
+	"url": "https://www.nhc.gov.cn/xcs/s3582new/"
+}

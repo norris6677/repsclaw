@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 /**
  * Hospital News Tool 单元测试
+ * 测试医院新闻查询工具的完整功能
  */
 
 import {
@@ -10,7 +11,8 @@ import {
   GET_HOSPITAL_NEWS_TOOL_NAME,
 } from '../../../src/tools/hospital-news.tool';
 import { HospitalNewsService } from '../../../src/services/hospital-news/hospital-news.service';
-import { TestSuite, assertEqual, assertTrue, assertExists, c } from '../test-utils';
+import { NewsSourceType } from '../../../src/types/hospital-news.types';
+import { TestSuite, assertEqual, assertTrue, assertExists, assertFalse, c } from '../test-utils';
 
 const suite = new TestSuite();
 
@@ -64,12 +66,31 @@ function createMockNewsService() {
   };
 }
 
+// ===== 工具定义测试 =====
+
 suite.add('GetHospitalNewsTool - 工具定义完整', async () => {
   assertEqual(GetHospitalNewsTool.name, 'get_hospital_news');
   assertExists(GetHospitalNewsTool.description);
   assertExists(GetHospitalNewsTool.parameters);
   assertEqual(GetHospitalNewsTool.parameters.type, 'object');
 });
+
+suite.add('GetHospitalNewsTool - 工具名称常量', async () => {
+  assertEqual(GET_HOSPITAL_NEWS_TOOL_NAME, 'get_hospital_news');
+});
+
+suite.add('GetHospitalNewsTool - 参数Schema结构', async () => {
+  const schema = GetHospitalNewsTool.parameters;
+  assertExists(schema.properties);
+  assertExists(schema.properties.hospitalName);
+  assertExists(schema.properties.days);
+  assertExists(schema.properties.maxResults);
+  assertExists(schema.properties.sources);
+  assertExists(schema.properties.keywords);
+  assertExists(schema.properties.includeContent);
+});
+
+// ===== 参数验证测试 =====
 
 suite.add('GetHospitalNewsTool - 参数Schema验证', async () => {
   // 有效参数
@@ -109,6 +130,11 @@ suite.add('GetHospitalNewsTool - days参数范围', async () => {
   const maxParams = { hospitalName: 'test', days: 90 };
   const maxResult = GetHospitalNewsParametersSchema.parse(maxParams);
   assertEqual(maxResult.days, 90);
+
+  // 超出范围应该验证失败
+  const overParams = { hospitalName: 'test', days: 100 };
+  const overResult = GetHospitalNewsParametersSchema.safeParse(overParams);
+  assertFalse(overResult.success, '超出范围的days应该验证失败');
 });
 
 suite.add('GetHospitalNewsTool - maxResults参数范围', async () => {
@@ -121,6 +147,11 @@ suite.add('GetHospitalNewsTool - maxResults参数范围', async () => {
   const maxParams = { hospitalName: 'test', maxResults: 50 };
   const maxResult = GetHospitalNewsParametersSchema.parse(maxParams);
   assertEqual(maxResult.maxResults, 50);
+
+  // 超出范围应该验证失败
+  const overParams = { hospitalName: 'test', maxResults: 100 };
+  const overResult = GetHospitalNewsParametersSchema.safeParse(overParams);
+  assertFalse(overResult.success, '超出范围的maxResults应该验证失败');
 });
 
 suite.add('GetHospitalNewsTool - sources参数验证', async () => {
@@ -130,9 +161,38 @@ suite.add('GetHospitalNewsTool - sources参数验证', async () => {
   };
   const result = GetHospitalNewsParametersSchema.parse(paramsWithSources);
   assertEqual(result.sources?.length, 2);
-  assertTrue(result.sources?.includes('hospital_self'));
-  assertTrue(result.sources?.includes('official'));
+  assertTrue(result.sources?.includes('hospital_self' as NewsSourceType));
+  assertTrue(result.sources?.includes('official' as NewsSourceType));
 });
+
+suite.add('GetHospitalNewsTool - 无效sources值', async () => {
+  const invalidSources = {
+    hospitalName: 'test',
+    sources: ['invalid_source'],
+  };
+  const result = GetHospitalNewsParametersSchema.safeParse(invalidSources);
+  assertFalse(result.success, '无效的source应该失败');
+});
+
+suite.add('GetHospitalNewsTool - includeContent参数', async () => {
+  const paramsWithContent = {
+    hospitalName: 'test',
+    includeContent: true,
+  };
+  const result = GetHospitalNewsParametersSchema.parse(paramsWithContent);
+  assertEqual(result.includeContent, true);
+});
+
+suite.add('GetHospitalNewsTool - keywords参数', async () => {
+  const paramsWithKeywords = {
+    hospitalName: 'test',
+    keywords: '科研 获奖',
+  };
+  const result = GetHospitalNewsParametersSchema.parse(paramsWithKeywords);
+  assertEqual(result.keywords, '科研 获奖');
+});
+
+// ===== Handler 测试 =====
 
 suite.add('GetHospitalNewsTool - Handler成功调用', async () => {
   const mockService = createMockNewsService() as any;
@@ -145,6 +205,17 @@ suite.add('GetHospitalNewsTool - Handler成功调用', async () => {
   assertEqual(result.data.hospital.resolved, '北京协和医院');
 });
 
+suite.add('GetHospitalNewsTool - Handler返回消息格式', async () => {
+  const mockService = createMockNewsService() as any;
+  const handler = createGetHospitalNewsHandler(mockService);
+
+  const result = await handler({ hospitalName: '协和医院' });
+
+  assertEqual(result.status, 'success');
+  assertExists(result.message);
+  assertTrue(result.message.includes('北京协和医院'));
+});
+
 suite.add('GetHospitalNewsTool - Handler带keywords', async () => {
   const mockService = createMockNewsService() as any;
   const handler = createGetHospitalNewsHandler(mockService);
@@ -152,6 +223,18 @@ suite.add('GetHospitalNewsTool - Handler带keywords', async () => {
   const result = await handler({
     hospitalName: '协和医院',
     keywords: '科研 获奖',
+  });
+
+  assertEqual(result.status, 'success');
+});
+
+suite.add('GetHospitalNewsTool - Handler带sources过滤', async () => {
+  const mockService = createMockNewsService() as any;
+  const handler = createGetHospitalNewsHandler(mockService);
+
+  const result = await handler({
+    hospitalName: '协和医院',
+    sources: ['hospital_self', 'official'],
   });
 
   assertEqual(result.status, 'success');
@@ -187,13 +270,38 @@ suite.add('GetHospitalNewsTool - Handler医院未找到', async () => {
   assertEqual(result.error.code, 'HOSPITAL_NOT_FOUND');
 });
 
-suite.add('GetHospitalNewsTool - includeContent参数', async () => {
-  const paramsWithContent = {
-    hospitalName: 'test',
-    includeContent: true,
+suite.add('GetHospitalNewsTool - Handler异常处理', async () => {
+  const errorService = {
+    getNews: async () => {
+      throw new Error('Service error');
+    },
   };
-  const result = GetHospitalNewsParametersSchema.parse(paramsWithContent);
-  assertEqual(result.includeContent, true);
+  const handler = createGetHospitalNewsHandler(errorService as any);
+
+  const result = await handler({ hospitalName: '协和医院' });
+
+  assertEqual(result.status, 'error');
+  assertEqual(result.error.code, 'QUERY_ERROR');
+});
+
+// ===== 综合场景测试 =====
+
+suite.add('GetHospitalNewsTool - 复杂查询参数组合', async () => {
+  const mockService = createMockNewsService() as any;
+  const handler = createGetHospitalNewsHandler(mockService);
+
+  const result = await handler({
+    hospitalName: '北京协和医院',
+    days: 30,
+    maxResults: 20,
+    sources: ['hospital_self', 'mainstream'],
+    keywords: '科研突破',
+    includeContent: true,
+  });
+
+  assertEqual(result.status, 'success');
+  assertExists(result.data);
+  assertExists(result.meta);
 });
 
 // 运行测试

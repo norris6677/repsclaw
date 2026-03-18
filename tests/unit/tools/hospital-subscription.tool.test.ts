@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 /**
  * Hospital Subscription Tool 单元测试
+ * 测试医院订阅工具的所有功能
  */
 
 import {
@@ -24,7 +25,9 @@ import {
   CHECK_SUBSCRIPTION_STATUS_TOOL_NAME,
 } from '../../../src/tools/hospital-subscription.tool';
 import { HospitalSubscriptionService } from '../../../src/services/hospital-subscription.service';
-import { TestSuite, assertEqual, assertTrue, assertExists, c } from '../test-utils';
+import { TestSuite, assertEqual, assertTrue, assertExists, c, assertFalse } from '../test-utils';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const suite = new TestSuite();
 
@@ -119,12 +122,18 @@ class MockHospitalSubscriptionService {
       primary: this.getPrimaryHospital()?.name || null,
     };
   }
+
+  updateLastPromptedDate(): void {
+    this.lastPromptedDate = new Date().toISOString().split('T')[0];
+  }
 }
 
 // 创建内存中的service实例
 function createTempService() {
   return new MockHospitalSubscriptionService();
 }
+
+// ===== 工具定义测试 =====
 
 suite.add('SubscribeHospitalTool - 工具定义完整', async () => {
   assertEqual(SubscribeHospitalTool.name, 'subscribe_hospital');
@@ -156,6 +165,8 @@ suite.add('SubscribeHospitalTool - 默认参数', async () => {
   assertEqual(result.isPrimary, false); // 默认值
 });
 
+// ===== Handler 功能测试 =====
+
 suite.add('SubscribeHospitalTool - Handler订阅医院', async () => {
   const service = createTempService();
   const handler = createSubscribeHospitalHandler(service);
@@ -180,6 +191,47 @@ suite.add('SubscribeHospitalTool - Handler重复订阅', async () => {
   assertEqual(result.status, 'success');
   assertTrue(result.data.isExisting);
 });
+
+suite.add('SubscribeHospitalTool - 第一个订阅自动成为主要医院', async () => {
+  const service = createTempService();
+  const handler = createSubscribeHospitalHandler(service);
+
+  const result = await handler({ name: '北京协和医院' });
+
+  assertEqual(result.status, 'success');
+  assertTrue(result.data.subscription.isPrimary, '第一个订阅应该自动成为主要医院');
+});
+
+suite.add('SubscribeHospitalTool - 订阅多个医院', async () => {
+  const service = createTempService();
+  const handler = createSubscribeHospitalHandler(service);
+
+  await handler({ name: '北京协和医院' });
+  await handler({ name: '华山医院' });
+  await handler({ name: '瑞金医院' });
+
+  const listHandler = createListHospitalsHandler(service);
+  const result = await listHandler({});
+
+  assertEqual(result.data.hospitals.length, 3);
+});
+
+suite.add('SubscribeHospitalTool - 更新为主要医院', async () => {
+  const service = createTempService();
+  const handler = createSubscribeHospitalHandler(service);
+
+  // 先订阅两家医院
+  await handler({ name: '北京协和医院' });
+  await handler({ name: '华山医院' });
+
+  // 将华山医院更新为主要医院
+  const result = await handler({ name: '华山医院', isPrimary: true });
+
+  assertEqual(result.status, 'success');
+  assertEqual(result.data.primary, '华山医院');
+});
+
+// ===== ListHospitals 测试 =====
 
 suite.add('ListHospitalsTool - 工具定义完整', async () => {
   assertEqual(ListHospitalsTool.name, 'list_subscribed_hospitals');
@@ -212,6 +264,21 @@ suite.add('ListHospitalsTool - Handler空列表', async () => {
   assertExists(result.message); // 应该提示如何添加订阅
 });
 
+suite.add('ListHospitalsTool - 显示主要医院标记', async () => {
+  const service = createTempService();
+  const subscribeHandler = createSubscribeHospitalHandler(service);
+  const listHandler = createListHospitalsHandler(service);
+
+  await subscribeHandler({ name: '北京协和医院' });
+  await subscribeHandler({ name: '华山医院' });
+
+  const result = await listHandler({});
+
+  assertTrue(result.message.includes('主要'), '应该显示主要医院标记');
+});
+
+// ===== Unsubscribe 测试 =====
+
 suite.add('UnsubscribeHospitalTool - 工具定义完整', async () => {
   assertEqual(UnsubscribeHospitalTool.name, 'unsubscribe_hospital');
   assertExists(UnsubscribeHospitalTool.description);
@@ -241,6 +308,27 @@ suite.add('UnsubscribeHospitalTool - Handler取消未订阅的医院', async () 
   assertEqual(result.status, 'error');
   assertEqual(result.error.code, 'NOT_FOUND');
 });
+
+suite.add('UnsubscribeHospitalTool - 取消主要医院后自动切换', async () => {
+  const service = createTempService();
+  const subscribeHandler = createSubscribeHospitalHandler(service);
+  const unsubscribeHandler = createUnsubscribeHospitalHandler(service);
+
+  // 订阅两家医院
+  await subscribeHandler({ name: '北京协和医院' }); // 自动成为主要
+  await subscribeHandler({ name: '华山医院' });
+
+  // 取消主要医院
+  await unsubscribeHandler({ name: '北京协和医院' });
+
+  const listHandler = createListHospitalsHandler(service);
+  const result = await listHandler({});
+
+  assertEqual(result.data.hospitals.length, 1);
+  assertEqual(result.data.primary, '华山医院');
+});
+
+// ===== SetPrimary 测试 =====
 
 suite.add('SetPrimaryHospitalTool - 工具定义完整', async () => {
   assertEqual(SetPrimaryHospitalTool.name, 'set_primary_hospital');
@@ -273,6 +361,26 @@ suite.add('SetPrimaryHospitalTool - Handler设置未订阅的医院为主要', a
   assertEqual(result.error.code, 'NOT_SUBSCRIBED');
 });
 
+suite.add('SetPrimaryHospitalTool - 切换主要医院', async () => {
+  const service = createTempService();
+  const subscribeHandler = createSubscribeHospitalHandler(service);
+  const setPrimaryHandler = createSetPrimaryHospitalHandler(service);
+
+  await subscribeHandler({ name: '医院A' });
+  await subscribeHandler({ name: '医院B' });
+  await subscribeHandler({ name: '医院C' });
+
+  // 设置 B 为主要
+  await setPrimaryHandler({ name: '医院B' });
+  // 切换到 C
+  const result = await setPrimaryHandler({ name: '医院C' });
+
+  assertEqual(result.data.primary, '医院C');
+  assertTrue(result.data.hospitals.filter((h: any) => h.isPrimary).length === 1, '应该只有一个主要医院');
+});
+
+// ===== CheckStatus 测试 =====
+
 suite.add('CheckSubscriptionStatusTool - 工具定义完整', async () => {
   assertEqual(CheckSubscriptionStatusTool.name, 'check_hospital_subscription_status');
   assertExists(CheckSubscriptionStatusTool.description);
@@ -298,6 +406,76 @@ suite.add('CheckSubscriptionStatusTool - Handler首次使用状态', async () =>
 
   assertEqual(result.data.isFirstTime, true);
   assertEqual(result.data.needsPrompt, true);
+  assertEqual(result.data.totalHospitals, 0);
+});
+
+suite.add('CheckSubscriptionStatusTool - 非首次使用状态', async () => {
+  const service = createTempService();
+  const subscribeHandler = createSubscribeHospitalHandler(service);
+  const checkHandler = createCheckSubscriptionStatusHandler(service);
+
+  await subscribeHandler({ name: '北京协和医院' });
+
+  const result = await checkHandler({});
+
+  assertEqual(result.data.isFirstTime, false);
+  assertEqual(result.data.totalHospitals, 1);
+});
+
+// ===== 综合场景测试 =====
+
+suite.add('综合场景 - 完整订阅流程', async () => {
+  const service = createTempService();
+  const subscribeHandler = createSubscribeHospitalHandler(service);
+  const listHandler = createListHospitalsHandler(service);
+  const setPrimaryHandler = createSetPrimaryHospitalHandler(service);
+  const unsubscribeHandler = createUnsubscribeHospitalHandler(service);
+  const checkHandler = createCheckSubscriptionStatusHandler(service);
+
+  // 1. 首次检查状态
+  const initialStatus = await checkHandler({});
+  assertEqual(initialStatus.data.isFirstTime, true);
+
+  // 2. 订阅第一家医院
+  const sub1 = await subscribeHandler({ name: '北京协和医院' });
+  assertEqual(sub1.data.subscription.isPrimary, true);
+
+  // 3. 订阅更多医院
+  await subscribeHandler({ name: '华山医院' });
+  await subscribeHandler({ name: '瑞金医院' });
+
+  // 4. 列出医院
+  const list = await listHandler({});
+  assertEqual(list.data.hospitals.length, 3);
+
+  // 5. 切换主要医院
+  await setPrimaryHandler({ name: '瑞金医院' });
+
+  // 6. 再次检查状态
+  const finalStatus = await checkHandler({});
+  assertEqual(finalStatus.data.isFirstTime, false);
+  assertEqual(finalStatus.data.primaryHospital, '瑞金医院');
+
+  // 7. 取消订阅
+  await unsubscribeHandler({ name: '华山医院' });
+
+  // 8. 验证列表
+  const finalList = await listHandler({});
+  assertEqual(finalList.data.hospitals.length, 2);
+});
+
+suite.add('综合场景 - 大小写不敏感匹配', async () => {
+  const service = createTempService();
+  const subscribeHandler = createSubscribeHospitalHandler(service);
+  const unsubscribeHandler = createUnsubscribeHospitalHandler(service);
+
+  // 使用不同大小写订阅
+  await subscribeHandler({ name: 'Beijing Xiehe Hospital' });
+
+  // 使用不同大小写取消
+  const result = await unsubscribeHandler({ name: 'beijing xiehe hospital' });
+
+  assertEqual(result.status, 'success');
 });
 
 // 运行测试

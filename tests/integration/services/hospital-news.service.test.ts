@@ -6,14 +6,18 @@
 
 import { HospitalNewsService } from '../../../src/services/hospital-news/hospital-news.service';
 import { NewsSourceType } from '../../../src/types/hospital-news.types';
-import { TestSuite, assertEqual, assertTrue, assertExists, c } from '../../unit/test-utils';
+import { TestSuite, assertEqual, assertTrue, assertExists, assertFalse, c } from '../../unit/test-utils';
 
 const suite = new TestSuite();
+
+// ===== 初始化测试 =====
 
 suite.add('HospitalNewsService - 初始化', async () => {
   const service = new HospitalNewsService();
   assertExists(service);
 });
+
+// ===== 医院解析测试 =====
 
 suite.add('HospitalNewsService - 解析已知医院', async () => {
   const service = new HospitalNewsService();
@@ -45,6 +49,20 @@ suite.add('HospitalNewsService - 使用别名查询', async () => {
   assertEqual(result.hospital.resolved, '北京协和医院');
 });
 
+suite.add('HospitalNewsService - 使用简称查询', async () => {
+  const service = new HospitalNewsService();
+
+  // 使用"华西"查询
+  const result = await service.getNews({
+    hospitalName: '华西',
+    days: 7,
+    maxResults: 10,
+  });
+
+  assertEqual(result.status, 'success');
+  assertEqual(result.hospital.resolved, '四川大学华西医院');
+});
+
 suite.add('HospitalNewsService - 未知医院返回错误', async () => {
   const service = new HospitalNewsService();
 
@@ -58,6 +76,8 @@ suite.add('HospitalNewsService - 未知医院返回错误', async () => {
   assertEqual(result.hospital.resolved, '');
   assertEqual(result.totalFound, 0);
 });
+
+// ===== 数据源测试 =====
 
 suite.add('HospitalNewsService - 指定数据源类型', async () => {
   const service = new HospitalNewsService();
@@ -74,6 +94,24 @@ suite.add('HospitalNewsService - 指定数据源类型', async () => {
   assertTrue(result.query.sources.includes(NewsSourceType.HOSPITAL_SELF));
   assertTrue(result.query.sources.includes(NewsSourceType.OFFICIAL));
 });
+
+suite.add('HospitalNewsService - 使用所有数据源', async () => {
+  const service = new HospitalNewsService();
+
+  const result = await service.getNews({
+    hospitalName: '北京协和医院',
+    days: 7,
+    maxResults: 10,
+  });
+
+  assertEqual(result.status, 'success');
+  // 默认应该包含所有数据源
+  assertTrue(result.query.sources.includes(NewsSourceType.HOSPITAL_SELF));
+  assertTrue(result.query.sources.includes(NewsSourceType.OFFICIAL));
+  assertTrue(result.query.sources.includes(NewsSourceType.MAINSTREAM));
+});
+
+// ===== 参数边界测试 =====
 
 suite.add('HospitalNewsService - 使用关键词过滤', async () => {
   const service = new HospitalNewsService();
@@ -122,6 +160,20 @@ suite.add('HospitalNewsService - maxResults参数边界检查', async () => {
   assertTrue(result.results.length <= 50);
 });
 
+suite.add('HospitalNewsService - maxResults最小值', async () => {
+  const service = new HospitalNewsService();
+
+  const result = await service.getNews({
+    hospitalName: '北京协和医院',
+    days: 7,
+    maxResults: 1,
+  });
+
+  assertTrue(result.results.length <= 1);
+});
+
+// ===== 缓存测试 =====
+
 suite.add('HospitalNewsService - 缓存机制', async () => {
   const service = new HospitalNewsService();
 
@@ -140,6 +192,27 @@ suite.add('HospitalNewsService - 缓存机制', async () => {
   });
 
   assertEqual(result2.status, 'success');
+});
+
+suite.add('HospitalNewsService - 不同参数不使用缓存', async () => {
+  const service = new HospitalNewsService();
+
+  // 第一次查询
+  const result1 = await service.getNews({
+    hospitalName: '北京协和医院',
+    days: 7,
+    maxResults: 10,
+  });
+
+  // 第二次不同参数查询
+  const result2 = await service.getNews({
+    hospitalName: '北京协和医院',
+    days: 14, // 不同参数
+    maxResults: 10,
+  });
+
+  assertEqual(result2.status, 'success');
+  assertEqual(result2.query.days, 14);
 });
 
 suite.add('HospitalNewsService - 清除缓存', async () => {
@@ -175,6 +248,8 @@ suite.add('HospitalNewsService - 获取缓存统计', async () => {
   assertExists(stats.entries);
 });
 
+// ===== 结果格式测试 =====
+
 suite.add('HospitalNewsService - 返回结果包含meta信息', async () => {
   const service = new HospitalNewsService();
 
@@ -204,6 +279,47 @@ suite.add('HospitalNewsService - sourceStats统计', async () => {
   assertExists(result.sourceStats[NewsSourceType.OFFICIAL] !== undefined);
   assertExists(result.sourceStats[NewsSourceType.MAINSTREAM] !== undefined);
   assertExists(result.sourceStats[NewsSourceType.AGGREGATOR] !== undefined);
+});
+
+suite.add('HospitalNewsService - 返回结果结构完整', async () => {
+  const service = new HospitalNewsService();
+
+  const result = await service.getNews({
+    hospitalName: '北京协和医院',
+    days: 7,
+    maxResults: 10,
+  });
+
+  assertEqual(result.status, 'success');
+  assertExists(result.hospital);
+  assertExists(result.hospital.input);
+  assertExists(result.hospital.resolved);
+  assertExists(result.hospital.aliases);
+  assertExists(result.query);
+  assertExists(result.totalFound);
+  assertExists(result.results);
+  assertTrue(Array.isArray(result.results));
+  assertExists(result.sourceStats);
+  assertExists(result.meta);
+});
+
+// ===== 多医院测试 =====
+
+suite.add('HospitalNewsService - 查询不同医院', async () => {
+  const service = new HospitalNewsService();
+
+  const hospitals = ['北京协和医院', '四川大学华西医院', '复旦大学附属中山医院'];
+
+  for (const hospital of hospitals) {
+    const result = await service.getNews({
+      hospitalName: hospital,
+      days: 7,
+      maxResults: 5,
+    });
+
+    assertEqual(result.status, 'success');
+    assertEqual(result.hospital.resolved, hospital);
+  }
 });
 
 // 运行测试

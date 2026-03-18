@@ -1,0 +1,20 @@
+{
+  "hospitals": [
+    {
+      "name": "医院1",
+      "subscribedAt": "2026-03-17T10:32:15.045Z",
+      "isPrimary": true
+    },
+    {
+      "name": "医院2",
+      "subscribedAt": "2026-03-17T10:32:15.049Z",
+      "isPrimary": false
+    },
+    {
+      "name": "医院3",
+      "subscribedAt": "2026-03-17T10:32:15.056Z",
+      "isPrimary": false
+    }
+  ],
+  "lastPromptedDate": null
+}

@@ -1,0 +1,9 @@
+{
+	"id": "dol3gdXYETwCkUw",
+	"json": "{\"id\":\"dol3gdXYETwCkUw\",\"url\":\"https://www.nhsa.gov.cn/art/2024/\",\"uniqueKey\":\"https://www.nhsa.gov.cn/art/2024\",\"method\":\"GET\",\"noRetry\":false,\"retryCount\":0,\"errorMessages\":[],\"headers\":{},\"userData\":{\"source\":{\"name\":\"国家医保局\",\"baseUrl\":\"https://www.nhsa.gov.cn\",\"newsUrl\":\"https://www.nhsa.gov.cn/art/2024/\",\"listSelector\":\".list li, .news-item\",\"titleSelector\":\"a\",\"dateSelector\":\".date\"}}}",
+	"method": "GET",
+	"orderNo": 1773843461887,
+	"retryCount": 0,
+	"uniqueKey": "https://www.nhsa.gov.cn/art/2024",
+	"url": "https://www.nhsa.gov.cn/art/2024/"
+}
