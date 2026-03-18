@@ -1,9 +1,9 @@
 #!/usr/bin/env tsx
 /**
- * 运行所有单元测试
+ * 运行所有 Mock 集成测试
  */
 
-import { log, c, TestResult } from './test-utils';
+import { log, c, TestResult } from './api/test-config';
 import { spawn } from 'child_process';
 import * as path from 'path';
 
@@ -13,24 +13,10 @@ interface TestFile {
 }
 
 const testFiles: TestFile[] = [
-  { name: '限流器', path: 'rate-limiter.test.ts' },
-  // API Client Tests
-  { name: 'PubMed Client', path: 'api/pubmed.client.test.ts' },
-  { name: 'FDA Client', path: 'api/fda.client.test.ts' },
-  { name: 'Clinical Trials Client', path: 'api/clinical-trials.client.test.ts' },
-  { name: 'Medical Terminology Client', path: 'api/medical-terminology.client.test.ts' },
-  { name: 'MedRxiv Client', path: 'api/medrxiv.client.test.ts' },
-  { name: 'NCBI Bookshelf Client', path: 'api/nci-bookshelf.client.test.ts' },
-  { name: 'CNKI Client', path: 'api/cnki.client.test.ts' },
-  // Tool Tests
-  { name: 'PubMed Tool', path: 'tools/pubmed.tool.test.ts' },
-  { name: 'FDA Tool', path: 'tools/fda.tool.test.ts' },
-  { name: 'Clinical Trials Tool', path: 'tools/clinical-trials.tool.test.ts' },
-  { name: 'ICD-10 Tool', path: 'tools/icd10.tool.test.ts' },
-  { name: 'MedRxiv Tool', path: 'tools/medrxiv.tool.test.ts' },
-  { name: 'NCBI Bookshelf Tool', path: 'tools/nci-bookshelf.tool.test.ts' },
-  { name: 'Hospital Subscription Tool', path: 'tools/hospital-subscription.tool.test.ts' },
-  { name: 'Hospital News Tool', path: 'tools/hospital-news.tool.test.ts' },
+  // Service Integration Tests
+  { name: 'Health API Service', path: 'services/health-api.service.test.ts' },
+  { name: 'Hospital News Service', path: 'services/hospital-news.service.test.ts' },
+  { name: 'Hospital Name Resolver', path: 'services/hospital-name-resolver.test.ts' },
 ];
 
 async function runTest(file: TestFile): Promise<TestResult> {
@@ -78,21 +64,27 @@ async function runTest(file: TestFile): Promise<TestResult> {
 
 async function main() {
   console.log(`${c.c}╔══════════════════════════════════════════════════════╗${c.reset}`);
-  console.log(`${c.c}║${c.b}         RepsClaw 单元测试套件                       ${c.c}║${c.reset}`);
+  console.log(`${c.c}║${c.b}         Mock 集成测试套件                           ${c.c}║${c.reset}`);
   console.log(`${c.c}╚══════════════════════════════════════════════════════╝${c.reset}\n`);
+
+  log('✓ 这些测试使用 Mock 数据，不发起真实 HTTP 请求', 'i');
+  console.log();
 
   const results: TestResult[] = [];
 
   for (const testFile of testFiles) {
-    log(`\n运行 ${testFile.name} 测试...`, 'i');
+    log(`\n${'='.repeat(60)}`, 'b');
+    log(`运行 ${testFile.name} Mock 测试...`, 'i');
+    log(`${'='.repeat(60)}`, 'b');
+
     const result = await runTest(testFile);
     results.push(result);
   }
 
   // 最终报告
-  console.log(`\n${c.c}${'═'.repeat(56)}${c.reset}`);
-  console.log(`${c.b}                    测试汇总报告                        ${c.reset}`);
-  console.log(`${c.c}${'═'.repeat(56)}${c.reset}\n`);
+  console.log(`\n${c.c}${'═'.repeat(60)}${c.reset}`);
+  console.log(`${c.b}              Mock 集成测试汇总报告                       ${c.reset}`);
+  console.log(`${c.c}${'═'.repeat(60)}${c.reset}\n`);
 
   for (const result of results) {
     const icon = result.ok ? c.g + '✔' : c.r + '✗';
@@ -106,12 +98,12 @@ async function main() {
   const passed = results.filter((r) => r.ok).length;
   const total = results.length;
 
-  console.log(`\n${c.c}${'═'.repeat(56)}${c.reset}`);
+  console.log(`\n${c.c}${'═'.repeat(60)}${c.reset}`);
   console.log(`${c.b}总计: ${total} | ${c.g}通过: ${passed}${c.reset} | ${c.r}失败: ${total - passed}${c.reset}`);
-  console.log(`${c.c}${'═'.repeat(56)}${c.reset}`);
+  console.log(`${c.c}${'═'.repeat(60)}${c.reset}`);
 
   if (passed === total) {
-    console.log(`\n${c.g}✨ 所有单元测试通过！${c.reset}\n`);
+    console.log(`\n${c.g}✨ 所有 Mock 集成测试通过！${c.reset}\n`);
   } else {
     console.log(`\n${c.r}⚠ 部分测试失败${c.reset}\n`);
   }
