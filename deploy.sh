@@ -35,6 +35,7 @@ SYNC_ITEMS=(
     "tsconfig.json"
     "openclaw.plugin.json"
     "src"
+    "scripts"
 )
 
 echo -e "${YELLOW}🔄 同步文件...${NC}"
@@ -74,7 +75,10 @@ echo -e "${GREEN}✅ 依赖安装完成${NC}"
 # 验证部署
 echo -e "${YELLOW}🔍 验证部署...${NC}"
 
-if [ -f "$PLUGIN_DIR/index.ts" ] && [ -d "$PLUGIN_DIR/src" ]; then
+if [ -f "$PLUGIN_DIR/index.ts" ] && \
+   [ -d "$PLUGIN_DIR/src/core" ] && \
+   [ -d "$PLUGIN_DIR/src/domains" ] && \
+   [ -d "$PLUGIN_DIR/src/orchestration" ]; then
     echo -e "${GREEN}✅ 部署成功！${NC}"
     echo ""
     echo -e "${BLUE}📋 部署信息:${NC}"
@@ -85,7 +89,7 @@ if [ -f "$PLUGIN_DIR/index.ts" ] && [ -d "$PLUGIN_DIR/src" ]; then
     echo ""
     echo -e "${BLUE}🧪 测试命令:${NC}"
     echo "  cd $PLUGIN_DIR"
-    echo "  npm run test:hospital:all"
+    echo "  npm run test:unit"
 else
     echo -e "${RED}❌ 部署验证失败${NC}"
     exit 1
@@ -94,3 +98,37 @@ fi
 # 显示文件数量
 FILE_COUNT=$(find "$PLUGIN_DIR" -type f | wc -l)
 echo -e "${BLUE}📊 已部署 $FILE_COUNT 个文件${NC}"
+
+# ========== CLI 构建与文档更新 ==========
+echo ""
+echo -e "${YELLOW}🔧 构建 CLI...${NC}"
+
+# 构建 CLI
+cd "$PLUGIN_DIR"
+if [ -f "scripts/build-cli.ts" ]; then
+    npx tsx scripts/build-cli.ts
+    echo -e "  ${GREEN}✓${NC} CLI 构建完成"
+else
+    echo -e "  ${RED}✗${NC} CLI 构建脚本不存在"
+fi
+
+# 更新文档
+echo ""
+echo -e "${YELLOW}📝 更新 AGENTS.md 和 TOOLS.md...${NC}"
+
+if [ -f "scripts/update-docs.ts" ]; then
+    npx tsx scripts/update-docs.ts
+    echo -e "  ${GREEN}✓${NC} 文档更新完成"
+else
+    echo -e "  ${RED}✗${NC} 文档更新脚本不存在"
+fi
+
+# 显示 CLI 使用提示
+echo ""
+echo -e "${BLUE}🚀 CLI 已就绪:${NC}"
+echo "  主程序: $PLUGIN_DIR/bin/repsclaw"
+echo ""
+echo -e "${BLUE}📖 快速开始:${NC}"
+echo "  $PLUGIN_DIR/bin/repsclaw --help"
+echo "  $PLUGIN_DIR/bin/repsclaw hospital list"
+echo ""

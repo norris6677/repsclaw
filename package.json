@@ -9,7 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "lint": "eslint src/**/*.ts",
     "clean": "rm -rf dist",
-    "postinstall": "node dist/cli/setup.js || tsx src/cli/setup.ts || echo 'Setup skipped'",
+    "postinstall": "tsx src/cli/setup.ts || node dist/cli/setup.js || echo 'Setup skipped'",
     "setup:openclaw": "tsx src/cli/setup.ts",
     "test": "npm run test:unit",
     "test:unit": "tsx tests/unit/run-all-tests.ts",
@@ -43,7 +43,10 @@
     "test:interactive:web": "tsx tests/interactive/http-server.ts",
     "test:interactive:scenario": "tsx tests/interactive/scenario-runner.ts",
     "test:hospital:cli": "tsx tests/interactive/hospital-test-cli.ts",
-    "test:hospital:all": "npm run test:hospital && npm run test:hospital:cli"
+    "test:hospital:all": "npm run test:hospital && npm run test:hospital:cli",
+    "cli:build": "tsx scripts/build-cli.ts",
+    "cli:docs": "tsx scripts/update-docs.ts",
+    "cli:test": "./bin/repsclaw --help"
   },
   "keywords": [
     "openclaw",

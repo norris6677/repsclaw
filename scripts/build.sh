@@ -7,45 +7,21 @@ echo "🔨 Building Repsclaw Plugin..."
 rm -rf dist
 mkdir -p dist
 
-# 复制配置文件
+# 用 esbuild 转译 src/ → dist/（不 bundle，保留模块结构）
+echo "📦 Transpiling TypeScript with esbuild..."
+npx esbuild \
+  $(find src -name "*.ts" | grep -v "\.test\.ts" | grep -v "\.spec\.ts") \
+  --outdir=dist \
+  --platform=node \
+  --format=cjs \
+  --target=node18 \
+  --sourcemap
+
+# 复制运行时所需的非 TS 文件
+echo "📋 Copying config files..."
 cp openclaw.plugin.json dist/openclaw.plugin.json
-
-# 生成 dist/index.js - 使用 OpenClaw 兼容的导出格式
-cat > dist/index.js << 'EOF'
-"use strict";
-
-const plugin = {
-  id: "repsclaw",
-  name: "Repsclaw Healthcare Plugin",
-  description: "Healthcare data integration with FDA, PubMed, Clinical Trials, and Medical Terminology APIs",
-  
-  register(api) {
-    api.logger.info("🩺 Repsclaw plugin initializing...");
-
-    // Register health check endpoint
-    api.registerHttpRoute({
-      path: "/api/repsclaw/health",
-      auth: "gateway",
-      handler: (_req, res) => {
-        res.statusCode = 200;
-        res.end(JSON.stringify({
-          status: "ok",
-          plugin: "repsclaw",
-          timestamp: new Date().toISOString(),
-        }));
-        return true;
-      },
-    });
-
-    api.logger.info("✅ Repsclaw plugin registered successfully");
-  },
-};
-
-// OpenClaw 兼容的导出方式
-module.exports = plugin;
-EOF
 
 echo "✅ Build complete!"
 echo ""
-echo "📦 Output files:"
-ls -la dist/
+echo "📦 Output files (dist/):"
+find dist -name "*.js" | head -20

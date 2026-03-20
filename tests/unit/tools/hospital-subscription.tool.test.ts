@@ -126,6 +126,12 @@ class MockHospitalSubscriptionService {
   updateLastPromptedDate(): void {
     this.lastPromptedDate = new Date().toISOString().split('T')[0];
   }
+
+  getAllDepartments(): Array<{ hospital: string; departments: string[] }> {
+    return this.hospitals
+      .filter((h: any) => h.departments && h.departments.length > 0)
+      .map((h: any) => ({ hospital: h.name, departments: h.departments }));
+  }
 }
 
 // 创建内存中的service实例
