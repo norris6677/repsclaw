@@ -2,7 +2,9 @@ import {
   CheerioCrawler,
   RequestQueue,
   CheerioCrawlingContext,
+  Configuration,
 } from 'crawlee';
+import { HeaderGenerator } from 'header-generator';
 import {
   NewsSourceClient,
   NewsSourceType,
@@ -10,8 +12,22 @@ import {
   HospitalNewsItem,
 } from '../../types/hospital-news.types';
 import { createLogger } from '../../utils/plugin-logger';
+import { CRAWLEE_STORAGE_DIR, ensureDataDirectories } from '../../config/data-paths.config';
 
 const logger = createLogger('REPSCLAW:OFFICIAL-NEWS');
+
+// 配置 Crawlee 使用统一的数据目录
+const crawleeConfig = new Configuration({
+  storageDir: CRAWLEE_STORAGE_DIR,
+});
+
+// 创建 header 生成器实例
+const headerGenerator = new HeaderGenerator({
+  browsers: ['chrome'],
+  devices: ['desktop'],
+  locales: ['zh-CN'],
+  operatingSystems: ['windows'],
+});
 
 /**
  * 官方政务新闻客户端 (Crawlee 版本)
@@ -102,6 +118,9 @@ export class OfficialNewsClient extends NewsSourceClient {
   ): Promise<HospitalNewsItem[]> {
     const items: HospitalNewsItem[] = [];
 
+    // 确保数据目录存在
+    ensureDataDirectories();
+
     // 创建请求队列
     const requestQueue = await RequestQueue.open(`official-${Date.now()}`);
     await requestQueue.addRequest({
@@ -112,6 +131,7 @@ export class OfficialNewsClient extends NewsSourceClient {
     // 配置 Crawlee 爬虫（更强的反爬策略）
     const crawler = new CheerioCrawler({
       requestQueue,
+      configuration: crawleeConfig,
 
       // 限制
       maxRequestsPerCrawl: 1,
@@ -126,14 +146,6 @@ export class OfficialNewsClient extends NewsSourceClient {
         },
       },
 
-      // 浏览器指纹伪装（模拟真实用户）
-      headerGeneratorOptions: {
-        browsers: ['chrome'],
-        devices: ['desktop'],
-        locales: ['zh-CN'],
-        operatingSystems: ['windows'],
-      },
-
       // 错误处理
       maxRequestRetries: 2,
       retryOnBlocked: true,
@@ -145,8 +157,17 @@ export class OfficialNewsClient extends NewsSourceClient {
       // 预处理请求
       preNavigationHooks: [
         async ({ request }) => {
-          // 添加额外的反爬请求头
+          // 1-3秒随机延迟，模拟真实用户行为
+          const delay = 1000 + Math.random() * 2000;
+          await new Promise(resolve => setTimeout(resolve, delay));
+
+          // 使用 header-generator 生成真实浏览器请求头
+          const headers = headerGenerator.getHeaders();
+
           request.headers ??= {};
+          // 合并生成的请求头
+          Object.assign(request.headers, headers);
+          // 添加额外的反爬请求头
           request.headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8';
           request.headers['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8';
           request.headers['Accept-Encoding'] = 'gzip, deflate, br';
@@ -225,7 +246,7 @@ export class OfficialNewsClient extends NewsSourceClient {
       failedRequestHandler({ request }, error: Error) {
         logger.error(`[Crawlee] 官方数据源请求失败: ${request.url}`, error);
       },
-    }, this.config);
+    });
 
     // 运行爬虫
     await crawler.run();

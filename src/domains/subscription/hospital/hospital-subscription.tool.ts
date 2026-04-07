@@ -18,7 +18,7 @@ export const SUBSCRIBE_HOSPITAL_TOOL_NAME = 'subscribe_hospital';
 
 export const SubscribeHospitalToolDefinition = {
   name: SUBSCRIBE_HOSPITAL_TOOL_NAME,
-  description: "订阅关注的医院 / Subscribe to a hospital\n\n典型场景：\n- \"我想订阅北京协和医院\"\n- \"帮我关注华山医院心内科\"\n- \"添加医院：复旦大学附属中山医院\"\n\n支持同时订阅科室，订阅后会优先展示该医院相关信息。",
+  description: "订阅关注的医院 / Subscribe to a hospital\n\n典型场景：\n- \"我想订阅北京协和医院\"\n- \"帮我关注华山医院心内科\"\n- \"添加医院：复旦大学附属中山医院\"\n- \"订阅北京协和医院\"\n\n支持同时订阅科室，订阅后会优先展示该医院相关信息。",
   parameters: zodToJsonSchema(SubscribeHospitalParametersSchema) as {
     type: 'object';
     properties: Record<string, unknown>;
@@ -28,8 +28,9 @@ export const SubscribeHospitalToolDefinition = {
     category: 'subscription' as const,
     domain: 'hospital',
     triggers: {
-      keywords: ['订阅', '关注', '添加医院', '我要'],
-      patterns: ['订阅.*医院', '关注.*医院', '添加.*医院'],
+      keywords: ['订阅', '关注', '添加医院', '我要', '我想'],
+      patterns: ['订阅.*医院', '关注.*医院', '添加.*医院', '我要.*医院', '我想.*医院'],
+      intent: ['订阅医院', '关注医院', '添加医院到订阅列表', '追踪医院动态'],
     },
     characteristics: {
       isReadOnly: false,

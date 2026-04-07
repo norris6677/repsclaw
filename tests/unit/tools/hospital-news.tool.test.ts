@@ -55,6 +55,8 @@ function createMockNewsService() {
         hospital_self: 2,
         official: 1,
         mainstream: 2,
+        baidu_search: 1,
+        wechat_search: 1,
         aggregator: 0,
       },
       meta: {
@@ -163,6 +165,26 @@ suite.add('GetHospitalNewsTool - sources参数验证', async () => {
   assertEqual(result.sources?.length, 2);
   assertTrue(result.sources?.includes('hospital_self' as NewsSourceType));
   assertTrue(result.sources?.includes('official' as NewsSourceType));
+});
+
+suite.add('GetHospitalNewsTool - 包含新数据源类型', async () => {
+  const paramsWithNewSources = {
+    hospitalName: 'test',
+    sources: ['hospital_self', 'baidu_search', 'wechat_search'] as const,
+  };
+  const result = GetHospitalNewsParametersSchema.parse(paramsWithNewSources);
+  assertEqual(result.sources?.length, 3);
+  assertTrue(result.sources?.includes('baidu_search' as NewsSourceType));
+  assertTrue(result.sources?.includes('wechat_search' as NewsSourceType));
+});
+
+suite.add('GetHospitalNewsTool - 所有数据源类型', async () => {
+  const paramsWithAllSources = {
+    hospitalName: 'test',
+    sources: ['hospital_self', 'official', 'mainstream', 'baidu_search', 'wechat_search', 'aggregator'] as const,
+  };
+  const result = GetHospitalNewsParametersSchema.parse(paramsWithAllSources);
+  assertEqual(result.sources?.length, 6);
 });
 
 suite.add('GetHospitalNewsTool - 无效sources值', async () => {

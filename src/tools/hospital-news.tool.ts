@@ -10,7 +10,7 @@ const toolLogger = createLogger('REPSCLAW:TOOL');
 export const GetHospitalNewsParametersSchema = z.object({
   hospitalName: z.string().min(1).describe('医院名称 / Hospital name（支持别名）'),
   sources: z.array(
-    z.enum(['hospital_self', 'official', 'mainstream', 'aggregator'])
+    z.enum(['hospital_self', 'official', 'mainstream', 'baidu_search', 'wechat_search', 'aggregator'])
   ).optional().describe('消息来源筛选，默认查询全部 / Filter by source type'),
   days: z.number().min(1).max(90).optional().default(7)
     .describe('查询最近N天的消息（1-90，默认7）/ Days to look back'),
@@ -34,6 +34,8 @@ export const GetHospitalNewsTool = {
 1. 医院自媒体/官网 - 医院官网新闻、官方公众号（最可靠、最及时）
 2. 官方政务渠道 - 卫健委、药监局等官方通告（政策影响类消息）
 3. 主流媒体 - 健康报、丁香园、动脉网等医疗媒体报道（行业新闻）
+4. 百度搜索 - 补充覆盖更多来源的新闻（有验证码风险，优雅降级）
+5. 微信搜索 - 搜狗微信公众号搜索（有验证码风险，限制频率）
 
 功能特性：
 - 支持医院名称自动解析（别名识别）
@@ -41,6 +43,7 @@ export const GetHospitalNewsTool = {
 - 情感分析（正面/中性/负面）
 - 自动分类（科研/临床/管理/政策等）
 - 2小时缓存，平衡实时性与性能
+- 百度搜索和微信搜索支持关键词叠加
 
 使用示例：
 - "查询北京协和医院最近一周的新闻"
@@ -134,6 +137,12 @@ function formatNewsForDisplay(result: import('../types/hospital-news.types').Hos
   if (sourceStats.mainstream > 0) {
     lines.push(`  • 主流媒体: ${sourceStats.mainstream}条`);
   }
+  if (sourceStats.baidu_search > 0) {
+    lines.push(`  • 百度搜索: ${sourceStats.baidu_search}条`);
+  }
+  if (sourceStats.wechat_search > 0) {
+    lines.push(`  • 微信搜索: ${sourceStats.wechat_search}条`);
+  }
 
   lines.push('', '📰 最新消息：', '');
 
@@ -169,6 +178,8 @@ function getSourceEmoji(type: NewsSourceType): string {
     hospital_self: '🏥',
     official: '📜',
     mainstream: '📰',
+    baidu_search: '🔍',
+    wechat_search: '💬',
     aggregator: '📡',
   };
   return emojis[type] || '📄';

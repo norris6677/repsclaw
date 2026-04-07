@@ -174,9 +174,9 @@ CLI主程序: \`~/.openclaw/extensions/repsclaw/bin/repsclaw\`
 
 #### 故障排查
 
-1. **命令不存在**: 确保已运行部署脚本 `./deploy.sh`
-2. **权限问题**: 检查CLI是否有执行权限 `chmod +x ~/.openclaw/extensions/repsclaw/bin/repsclaw`
-3. **数据不更新**: CLI直接操作JSON文件，确保没有其他进程锁定文件
+**命令不存在**: 确保已运行部署脚本 \`./deploy.sh\`
+**权限问题**: 检查CLI是否有执行权限 \`chmod +x ~/.openclaw/extensions/repsclaw/bin/repsclaw\`
+**数据不更新**: CLI直接操作JSON文件，确保没有其他进程锁定文件
 
 <!-- REPSCLAW-TOOLS-AUTO:END -->`;
 }

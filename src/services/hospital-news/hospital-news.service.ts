@@ -8,9 +8,14 @@ import {
 } from '../../types/hospital-news.types';
 import { HospitalSelfNewsClient } from './hospital-self-news.crawlee.client';
 import { OfficialNewsClient } from './official-news.crawlee.client';
+import { OfficialNewsPlaywrightClient } from './official-news.playwright.client';
 import { MainstreamNewsClient } from './mainstream-news.client';
+import { BaiduSearchClient } from './baidu-search.client';
+import { WechatSearchClient } from './wechat-search.client';
 import { HospitalNameResolver } from '../../utils/hospital-name-resolver';
 import { createLogger } from '../../utils/plugin-logger';
+import { subscriptionDB as defaultSubscriptionDB } from '../subscription-db.service';
+import type { ISubscriptionDatabase } from '../subscription-db.interface';
 
 const logger = createLogger('REPSCLAW:NEWS-SERVICE');
 
@@ -28,13 +33,17 @@ export class HospitalNewsService {
   private clients: NewsSourceClient[];
   private hospitalResolver: HospitalNameResolver;
   private readonly CACHE_TTL = 2 * 60 * 60 * 1000; // 2小时
+  private subscriptionDB: ISubscriptionDatabase;
 
-  constructor() {
+  constructor(subscriptionDB?: ISubscriptionDatabase) {
+    this.subscriptionDB = subscriptionDB || defaultSubscriptionDB;
     this.hospitalResolver = new HospitalNameResolver();
     this.clients = [
-      new HospitalSelfNewsClient(),    // 优先级1
-      new OfficialNewsClient(),         // 优先级2
-      new MainstreamNewsClient(),       // 优先级3
+      new HospitalSelfNewsClient(),           // 优先级1: 医院官网
+      new OfficialNewsPlaywrightClient(),     // 优先级2: 政府网站（使用Playwright应对JS挑战）
+      new MainstreamNewsClient(),             // 优先级3: 主流媒体
+      new BaiduSearchClient(this.subscriptionDB),  // 优先级4: 百度搜索（补充覆盖）
+      new WechatSearchClient(this.subscriptionDB), // 优先级5: 搜狗微信（公众号内容）
     ];
   }
 
@@ -48,12 +57,18 @@ export class HospitalNewsService {
       return this.createErrorResult(params.hospitalName, '未找到该医院，请检查医院名称');
     }
 
-    // 2. 构建缓存key
+    // 2. 获取订阅信息（用于科室过滤、医生过滤和增量更新）
+    const subscription = this.subscriptionDB.getByName(resolved.name);
+    const departments = subscription?.departments;
+    const doctors = this.subscriptionDB.getDoctors(resolved.name).map(d => d.name);
+    const lastQueryAt = subscription?.lastQueryAt;
+
+    // 3. 构建缓存key
     const cacheKey = this.buildCacheKey(resolved.name, params);
     const cached = this.getFromCache(cacheKey);
 
-    // 3. 缓存有效直接返回
-    if (cached) {
+    // 4. 缓存有效直接返回（增量模式下跳过缓存）
+    if (cached && !params.incremental) {
       return {
         ...cached,
         meta: {
@@ -64,32 +79,39 @@ export class HospitalNewsService {
       };
     }
 
-    // 4. 确定要查询的数据源
+    // 5. 确定要查询的数据源
     const sourceTypes = params.sources?.length
       ? params.sources
       : [NewsSourceType.HOSPITAL_SELF, NewsSourceType.OFFICIAL, NewsSourceType.MAINSTREAM];
 
     const activeClients = this.clients.filter(c => sourceTypes.includes(c.sourceType));
 
-    // 5. 并行查询所有数据源
+    // 6. 并行查询所有数据源（带熔断保护）
     const searchParams: NewsSearchParams = {
       hospitalName: resolved.name,
       aliases: resolved.aliases,
       days: Math.min(Math.max(params.days || 7, 1), 90),
       maxResults: params.maxResults || 10,
       keywords: params.keywords,
+      departments, // 传入科室过滤
+      doctors, // 传入医生过滤
+      incremental: params.incremental,
+      lastQueryAt: params.incremental ? lastQueryAt || undefined : undefined,
     };
 
+    // 使用熔断保护的查询
     const results = await Promise.allSettled(
-      activeClients.map(client => client.search(searchParams))
+      activeClients.map(client => client.searchWithBreaker(searchParams))
     );
 
-    // 6. 聚合结果
+    // 7. 聚合结果
     const allNews: HospitalNewsItem[] = [];
     const sourceStats: Record<string, number> = {
       [NewsSourceType.HOSPITAL_SELF]: 0,
       [NewsSourceType.OFFICIAL]: 0,
       [NewsSourceType.MAINSTREAM]: 0,
+      [NewsSourceType.BAIDU_SEARCH]: 0,
+      [NewsSourceType.WECHAT_SEARCH]: 0,
       [NewsSourceType.AGGREGATOR]: 0,
     };
 
@@ -99,18 +121,30 @@ export class HospitalNewsService {
         allNews.push(...result.value);
         sourceStats[client.sourceType] = result.value.length;
       } else {
-        console.error(`[HospitalNewsService] ${client.sourceType} 查询失败:`, result.reason);
+        logger.error(`[HospitalNewsService] ${client.sourceType} 查询失败:`, result.reason);
         sourceStats[client.sourceType] = 0;
       }
     });
 
-    // 7. 排序和去重
-    const sortedNews = this.sortAndDeduplicate(allNews);
+    // 8. 增量更新过滤
+    let filteredNews = allNews;
+    if (params.incremental && lastQueryAt) {
+      const lastIds = this.subscriptionDB.getCachedNews(resolved.name, new Date(lastQueryAt))
+        .map(n => n.id);
+      filteredNews = this.filterIncremental(allNews, lastIds);
+    }
 
-    // 8. 截断结果
+    // 9. 排序和去重
+    const sortedNews = this.sortAndDeduplicate(filteredNews);
+
+    // 10. 截断结果
     const finalResults = sortedNews.slice(0, params.maxResults || 10);
 
-    // 9. 构建响应
+    // 11. 更新查询时间和缓存结果（用于下次增量）
+    this.subscriptionDB.updateLastQueryTime(resolved.name);
+    this.subscriptionDB.cacheNews(finalResults);
+
+    // 12. 构建响应
     const response: HospitalNewsResult = {
       status: 'success',
       hospital: {
@@ -128,15 +162,25 @@ export class HospitalNewsService {
       sourceStats,
       meta: {
         cached: false,
+        incremental: params.incremental || false,
+        newItems: params.incremental ? finalResults.length : undefined,
         fetchedAt: new Date().toISOString(),
         nextUpdateAt: new Date(Date.now() + this.CACHE_TTL).toISOString(),
       },
     };
 
-    // 10. 写入缓存
+    // 13. 写入缓存
     this.setCache(cacheKey, response);
 
     return response;
+  }
+
+  /**
+   * 增量过滤 - 排除已存在的新闻
+   */
+  private filterIncremental(items: HospitalNewsItem[], lastIds: string[]): HospitalNewsItem[] {
+    const seen = new Set(lastIds);
+    return items.filter(item => !seen.has(item.id));
   }
 
   /**
@@ -187,9 +231,11 @@ export class HospitalNewsService {
       [NewsSourceType.HOSPITAL_SELF]: 1,   // 最高
       [NewsSourceType.OFFICIAL]: 2,
       [NewsSourceType.MAINSTREAM]: 3,
-      [NewsSourceType.AGGREGATOR]: 4,      // 最低
+      [NewsSourceType.BAIDU_SEARCH]: 4,    // 百度搜索补充
+      [NewsSourceType.WECHAT_SEARCH]: 5,   // 微信搜索（验证码多，优先级最低）
+      [NewsSourceType.AGGREGATOR]: 6,      // 最低
     };
-    return priorities[sourceType] || 5;
+    return priorities[sourceType] || 7;
   }
 
   private buildCacheKey(hospitalName: string, params: GetHospitalNewsParameters): string {
@@ -240,6 +286,8 @@ export class HospitalNewsService {
         [NewsSourceType.HOSPITAL_SELF]: 0,
         [NewsSourceType.OFFICIAL]: 0,
         [NewsSourceType.MAINSTREAM]: 0,
+        [NewsSourceType.BAIDU_SEARCH]: 0,
+        [NewsSourceType.WECHAT_SEARCH]: 0,
         [NewsSourceType.AGGREGATOR]: 0,
       },
       meta: {

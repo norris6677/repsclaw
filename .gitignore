@@ -39,3 +39,9 @@ coverage/
 tmp/
 temp/
 *.tmp
+
+# Data directory (development data - each environment has its own)
+data/
+
+# Old storage directory (legacy)
+storage/

@@ -27,7 +27,7 @@ export class MainstreamNewsClient extends NewsSourceClient {
   }
 
   async search(params: NewsSearchParams): Promise<HospitalNewsItem[]> {
-    const { hospitalName, aliases, days, maxResults, keywords } = params;
+    const { hospitalName, aliases, days, maxResults, keywords, departments, doctors } = params;
 
     if (!this.apiKey) {
       console.warn('[MainstreamNewsClient] 未配置API Key，跳过主流媒体查询');
@@ -40,10 +40,21 @@ export class MainstreamNewsClient extends NewsSourceClient {
 
     const results: HospitalNewsItem[] = [];
 
-    // 构建搜索关键词
-    const searchKeyword = keywords
-      ? `${hospitalName} ${keywords}`
-      : hospitalName;
+    // 构建科室后缀（如果有订阅科室）
+    const deptSuffix = departments && departments.length > 0
+      ? ` ${departments.join(' ')}`
+      : '';
+
+    // 构建医生后缀（如果有订阅医生）
+    const doctorSuffix = doctors && doctors.length > 0
+      ? ` ${doctors.join(' ')}`
+      : '';
+
+    // 构建搜索关键词（医院名 + 科室 + 医生 + 关键词）
+    let searchKeyword = `${hospitalName}${deptSuffix}${doctorSuffix}`;
+    if (keywords) {
+      searchKeyword += ` ${keywords}`;
+    }
 
     try {
       // 聚合数据API支持keyword参数

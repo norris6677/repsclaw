@@ -7,6 +7,7 @@ import {
 } from 'crawlee';
 import { EventEmitter } from 'events';
 import { createLogger } from '../utils/plugin-logger';
+import { CRAWLEE_STORAGE_DIR, ensureDataDirectories } from '../config/data-paths.config';
 
 const logger = createLogger('REPSCLAW:CRAWLEE');
 
@@ -71,11 +72,17 @@ export class CrawleeCrawlerService extends EventEmitter {
 
   constructor() {
     super();
-    // 配置 Crawlee
+    // 确保数据目录存在
+    ensureDataDirectories();
+
+    // 配置 Crawlee 使用统一的数据目录
     this.config = new Configuration({
-      persistStorage: false,
+      persistStorage: false, // 不持久化存储
       defaultRequestQueueId: 'repsclaw-queue',
+      storageDir: CRAWLEE_STORAGE_DIR, // 使用统一的数据目录
     });
+
+    logger.info('[Crawlee] Initialized with storage directory', { storageDir: CRAWLEE_STORAGE_DIR });
   }
 
   /**

@@ -1,0 +1,42 @@
+#!/bin/bash
+#
+# Git post-commit hook - 自动更新版本号
+# 此 hook 在每次提交后自动增加 patch 版本号
+#
+# 安装方法:
+#   git config core.hooksPath .githooks
+#
+# 注意: 这个 hook 会创建一个新的提交来更新版本号
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+VERSION_SCRIPT="$PROJECT_ROOT/scripts/version-bump.sh"
+
+# 检查是否刚刚更新了版本（避免无限循环）
+LAST_COMMIT_MSG=$(git log -1 --pretty=%B)
+if [[ "$LAST_COMMIT_MSG" =~ ^chore:\ bump\ version\ to\ [0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    exit 0
+fi
+
+# 检查是否有版本相关的文件被修改
+if git diff HEAD~1 --name-only | grep -qE "^(package\.json|openclaw\.plugin\.json)$"; then
+    # 检查是否版本已经更新
+    CURRENT_VERSION=$(grep -o '"version": "[^"]*"' "$PROJECT_ROOT/package.json" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+    PREV_VERSION=$(git show HEAD~1:package.json 2>/dev/null | grep -o '"version": "[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/' || echo "0.0.0")
+
+    if [ "$CURRENT_VERSION" != "$PREV_VERSION" ]; then
+        # 版本已经手动更新，不需要自动更新
+        exit 0
+    fi
+fi
+
+# 执行版本更新
+echo "🔄 Auto-bumping version..."
+NEW_VERSION=$("$VERSION_SCRIPT" patch)
+
+# 创建版本更新提交
+git commit -m "chore: bump version to $NEW_VERSION" --no-verify
+
+echo "✅ Version bumped to $NEW_VERSION"

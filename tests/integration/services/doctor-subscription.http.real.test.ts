@@ -1,211 +1,137 @@
 #!/usr/bin/env tsx
 /**
- * Doctor Subscription HTTP 真实环境测试
- * 测试医生订阅查询 HTTP 端点的实际响应
+ * Doctor Subscription HTTP Real Environment Test
+ * Tests doctor subscription endpoints with real HTTP calls
  *
- * 需要 OpenClaw 服务器运行在本地
+ * Supports two modes via REPSCLAW_TEST_MODE env variable:
+ * - local:   Requires local OpenClaw + Markdown storage environment
+ * - virtual: Uses standalone test server with in-memory storage (default)
  */
 
-import { log, TestResult, assertExists, assertEqual, assertTrue, c, formatError, sleep } from '../api/test-config';
-import * as http from 'http';
-import * as https from 'https';
+import {
+  TEST_MODE,
+  TEST_BASE_URL,
+  startTestEnvironment,
+  stopTestEnvironment,
+  httpRequest,
+  runTestSuite,
+  assertExists,
+  assertEqual,
+  assertTrue,
+  sleep,
+  log,
+} from '../http-test-infra';
 
-// 测试配置
-const TEST_CONFIG = {
-  baseUrl: process.env.REPSCLAW_TEST_URL || 'http://localhost:3000',
-  timeout: 30000,
-};
-
-interface HttpResponse {
-  statusCode: number;
-  data: any;
-  headers: http.IncomingHttpHeaders;
-}
-
-// HTTP 请求工具
-async function httpRequest(
-  path: string,
-  method: string = 'GET',
-  query?: Record<string, string>
-): Promise<HttpResponse> {
-  const url = new URL(path, TEST_CONFIG.baseUrl);
-  if (query) {
-    Object.entries(query).forEach(([key, value]) => {
-      url.searchParams.append(key, value);
-    });
-  }
-
-  return new Promise((resolve, reject) => {
-    const client = url.protocol === 'https:' ? https : http;
-    const options = {
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname + url.search,
-      method,
-      timeout: TEST_CONFIG.timeout,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-    };
-
-    const req = client.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-      res.on('end', () => {
-        try {
-          resolve({
-            statusCode: res.statusCode || 0,
-            data: data ? JSON.parse(data) : null,
-            headers: res.headers,
-          });
-        } catch {
-          resolve({
-            statusCode: res.statusCode || 0,
-            data: data,
-            headers: res.headers,
-          });
-        }
-      });
-    });
-
-    req.on('error', (error) => {
-      reject(error);
-    });
-
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Request timeout'));
-    });
-
-    req.end();
-  });
-}
-
-async function runTest(name: string, fn: () => Promise<void>): Promise<TestResult> {
-  const start = Date.now();
-  try {
-    await fn();
-    return { name, ok: true, duration: Date.now() - start };
-  } catch (error) {
-    return { name, ok: false, err: formatError(error), duration: Date.now() - start };
-  }
-}
-
-// ===== 基础健康检查 =====
+// ===== Test Cases =====
 
 async function testHealthEndpoint() {
-  log('测试: 健康检查端点', 'i');
+  log('Testing health endpoint', 'i');
 
   const response = await httpRequest('/api/repsclaw/health');
 
-  assertEqual(response.statusCode, 200, '健康检查应该返回 200');
-  assertExists(response.data, '应该返回数据');
-  assertEqual(response.data.status, 'ok', '状态应该是 ok');
+  assertEqual(response.statusCode, 200, 'Health check should return 200');
+  assertExists(response.data, 'Should return data');
+  assertEqual(response.data.status, 'ok', 'Status should be ok');
 
-  log(`✓ 服务状态: ${response.data.status}`, 's');
+  log(`✓ Server status: ${response.data.status}`, 's');
 }
 
-// ===== 医生订阅端点测试 =====
-
 async function testDoctorSubscribeWithHospital() {
-  log('测试: 订阅医生（医院已订阅）', 'i');
+  log('Testing subscribe doctor (hospital already subscribed)', 'i');
 
-  // 先订阅医院
+  // First subscribe hospital
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '北京协和医院',
     isPrimary: 'true',
   });
 
-  // 订阅医生
+  // Subscribe doctor
   const response = await httpRequest('/api/repsclaw/doctors/subscribe', 'GET', {
     hospitalName: '北京协和医院',
     doctorName: '张医生',
     department: '心内科',
   });
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertExists(response.data, '应该返回数据');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertExists(response.data, 'Should return data');
 
   if (response.data.status === 'success') {
     assertEqual(response.data.data.subscription.name, '张医生');
     assertEqual(response.data.data.subscription.hospital, '北京协和医院');
-    log(`✓ 医生订阅成功: ${response.data.data.subscription.name}`, 's');
+    log(`✓ Doctor subscribed: ${response.data.data.subscription.name}`, 's');
   } else {
-    log(`⚠ 医生订阅返回错误: ${response.data.error?.message || '未知错误'}`, 'w');
+    log(`⚠ Doctor subscribe returned error: ${response.data.error?.message || 'Unknown error'}`, 'w');
   }
 }
 
 async function testDoctorSubscribeWithoutHospital() {
-  log('测试: 订阅医生（医院未订阅）', 'i');
+  log('Testing subscribe doctor (hospital not subscribed)', 'i');
 
   const response = await httpRequest('/api/repsclaw/doctors/subscribe', 'GET', {
     hospitalName: '未订阅的医院XYZ123',
     doctorName: '李医生',
   });
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertEqual(response.data.status, 'error', '应该返回错误状态');
-  assertTrue(response.data.error?.message?.includes('未订阅'), '错误消息应提示医院未订阅');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertEqual(response.data.status, 'error', 'Should return error status');
+  assertTrue(response.data.error?.message?.includes('未订阅'), 'Error message should indicate hospital not subscribed');
 
-  log(`✓ 正确处理医院未订阅情况`, 's');
+  log(`✓ Correctly handled hospital not subscribed`, 's');
 }
 
 async function testDoctorSubscribeWithAlias() {
-  log('测试: 使用别名订阅医生', 'i');
+  log('Testing subscribe doctor with hospital alias', 'i');
 
-  // 确保医院已订阅
+  // Ensure hospital is subscribed
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '复旦大学附属华山医院',
   });
 
-  // 使用别名订阅医生
+  // Subscribe doctor using alias
   const response = await httpRequest('/api/repsclaw/doctors/subscribe', 'GET', {
-    hospitalName: '华山',  // 别名
+    hospitalName: '华山',  // Alias
     doctorName: '王医生',
   });
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertExists(response.data, '应该返回数据');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertExists(response.data, 'Should return data');
 
   if (response.data.status === 'success') {
     assertEqual(response.data.data.subscription.hospital, '复旦大学附属华山医院');
-    log(`✓ 别名解析成功: 华山 -> 复旦大学附属华山医院`, 's');
+    log(`✓ Alias resolved: 华山 -> 复旦大学附属华山医院`, 's');
   }
 }
 
 async function testListDoctors() {
-  log('测试: 列出已订阅医生', 'i');
+  log('Testing list subscribed doctors', 'i');
 
   const response = await httpRequest('/api/repsclaw/doctors/list', 'GET', {});
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertExists(response.data, '应该返回数据');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertExists(response.data, 'Should return data');
 
   if (response.data.status === 'success') {
-    log(`✓ 已订阅 ${response.data.data.doctors?.length || 0} 位医生`, 's');
+    log(`✓ Subscribed ${response.data.data.doctors?.length || 0} doctors`, 's');
   }
 }
 
 async function testListDoctorsWithFilter() {
-  log('测试: 按医院筛选医生', 'i');
+  log('Testing list doctors with hospital filter', 'i');
 
   const response = await httpRequest('/api/repsclaw/doctors/list', 'GET', {
     hospitalName: '协和',
   });
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertExists(response.data, '应该返回数据');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertExists(response.data, 'Should return data');
 
-  log(`✓ 筛选请求成功`, 's');
+  log(`✓ Filter request successful`, 's');
 }
 
 async function testUnsubscribeDoctor() {
-  log('测试: 取消订阅医生', 'i');
+  log('Testing unsubscribe doctor', 'i');
 
-  // 先订阅
+  // First subscribe
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '北京协和医院',
   });
@@ -215,25 +141,25 @@ async function testUnsubscribeDoctor() {
     doctorName: '测试医生',
   });
 
-  // 取消订阅
+  // Unsubscribe
   const response = await httpRequest('/api/repsclaw/doctors/unsubscribe', 'GET', {
     hospitalName: '北京协和医院',
     doctorName: '测试医生',
   });
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
+  assertEqual(response.statusCode, 200, 'Should return 200');
 
   if (response.data.status === 'success') {
-    log(`✓ 取消订阅成功`, 's');
+    log(`✓ Unsubscribe successful`, 's');
   } else {
-    log(`⚠ 取消订阅返回: ${response.data.error?.message || '未知错误'}`, 'w');
+    log(`⚠ Unsubscribe returned: ${response.data.error?.message || 'Unknown error'}`, 'w');
   }
 }
 
 async function testSetPrimaryDoctor() {
-  log('测试: 设置主要医生', 'i');
+  log('Testing set primary doctor', 'i');
 
-  // 确保医院和医生已订阅
+  // Ensure hospital and doctor are subscribed
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '北京协和医院',
   });
@@ -243,40 +169,40 @@ async function testSetPrimaryDoctor() {
     doctorName: '主要医生测试',
   });
 
-  // 设置为主要医生
+  // Set as primary doctor
   const response = await httpRequest('/api/repsclaw/doctors/set-primary', 'GET', {
     hospitalName: '北京协和医院',
     doctorName: '主要医生测试',
   });
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
+  assertEqual(response.statusCode, 200, 'Should return 200');
 
   if (response.data.status === 'success') {
-    log(`✓ 设置主要医生成功`, 's');
+    log(`✓ Set primary doctor successful`, 's');
   } else {
-    log(`⚠ 设置主要医生返回: ${response.data.error?.message || '未知错误'}`, 'w');
+    log(`⚠ Set primary doctor returned: ${response.data.error?.message || 'Unknown error'}`, 'w');
   }
 }
 
 async function testCheckDoctorSubscriptionStatus() {
-  log('测试: 检查医生订阅状态', 'i');
+  log('Testing check doctor subscription status', 'i');
 
   const response = await httpRequest('/api/repsclaw/doctors/status', 'GET', {});
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertExists(response.data, '应该返回数据');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertExists(response.data, 'Should return data');
 
   if (response.data.status === 'success') {
     assertExists(response.data.data.totalDoctors !== undefined);
     assertExists(response.data.data.byHospital);
-    log(`✓ 状态检查成功: ${response.data.data.totalDoctors} 位医生`, 's');
+    log(`✓ Status check: ${response.data.data.totalDoctors} doctors`, 's');
   }
 }
 
 async function testDoctorSubscriptionResponseStructure() {
-  log('测试: 响应结构完整性', 'i');
+  log('Testing response structure completeness', 'i');
 
-  // 确保有数据
+  // Ensure there's data
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '北京协和医院',
   });
@@ -289,31 +215,31 @@ async function testDoctorSubscriptionResponseStructure() {
 
   const response = await httpRequest('/api/repsclaw/doctors/list', 'GET', {});
 
-  assertEqual(response.statusCode, 200, '应该返回 200');
-  assertExists(response.data, '应该返回数据');
+  assertEqual(response.statusCode, 200, 'Should return 200');
+  assertExists(response.data, 'Should return data');
 
   if (response.data.status === 'success') {
     const data = response.data.data;
-    assertExists(data.doctors, '应该包含 doctors');
-    assertExists(data.primary, '应该包含 primary');
-    assertExists(data.totalCount !== undefined, '应该包含 totalCount');
+    assertExists(data.doctors, 'Should contain doctors');
+    assertExists(data.primary, 'Should contain primary');
+    assertExists(data.totalCount !== undefined, 'Should contain totalCount');
 
     if (data.doctors.length > 0) {
       const doctor = data.doctors[0];
-      assertExists(doctor.name, '医生应该包含 name');
-      assertExists(doctor.hospital, '医生应该包含 hospital');
-      assertExists(doctor.subscribedAt, '医生应该包含 subscribedAt');
-      assertExists(doctor.isPrimary !== undefined, '医生应该包含 isPrimary');
+      assertExists(doctor.name, 'Doctor should contain name');
+      assertExists(doctor.hospital, 'Doctor should contain hospital');
+      assertExists(doctor.subscribedAt, 'Doctor should contain subscribedAt');
+      assertExists(doctor.isPrimary !== undefined, 'Doctor should contain isPrimary');
     }
 
-    log(`✓ 响应结构完整`, 's');
+    log(`✓ Response structure complete`, 's');
   }
 }
 
 async function testSubscribeMultipleDoctors() {
-  log('测试: 订阅多个医生', 'i');
+  log('Testing subscribe multiple doctors', 'i');
 
-  // 确保医院已订阅
+  // Ensure hospital is subscribed
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '四川大学华西医院',
   });
@@ -326,26 +252,24 @@ async function testSubscribeMultipleDoctors() {
       doctorName: doctor,
     });
 
-    assertEqual(response.statusCode, 200, `${doctor} 订阅应该返回 200`);
+    assertEqual(response.statusCode, 200, `${doctor} subscribe should return 200`);
     await sleep(100);
   }
 
-  // 验证列表
+  // Verify list
   const listResponse = await httpRequest('/api/repsclaw/doctors/list', 'GET', {
     hospitalName: '华西',
   });
 
   if (listResponse.data.status === 'success') {
-    log(`✓ 多医生订阅完成，该医院共 ${listResponse.data.data.doctors?.length || 0} 位医生`, 's');
+    log(`✓ Multiple doctors subscribed, total: ${listResponse.data.data.doctors?.length || 0}`, 's');
   }
 }
 
-// ===== 性能测试 =====
-
 async function testPerformance() {
-  log('测试: 医生订阅端点性能', 'i');
+  log('Testing endpoint performance', 'i');
 
-  // 确保医院已订阅
+  // Ensure hospital is subscribed
   await httpRequest('/api/repsclaw/hospitals/subscribe', 'GET', {
     name: '北京协和医院',
   });
@@ -361,95 +285,50 @@ async function testPerformance() {
   const duration = Date.now() - startTime;
   const avgDuration = duration / iterations;
 
-  log(`✓ ${iterations} 次请求平均耗时: ${avgDuration.toFixed(2)}ms`, 's');
+  log(`✓ ${iterations} requests avg: ${avgDuration.toFixed(2)}ms`, 's');
 }
 
-// ===== 主函数 =====
+// ===== Main Function =====
 
 async function main() {
-  console.log(`${c.c}╔══════════════════════════════════════════════════════╗${c.reset}`);
-  console.log(`${c.c}║${c.b}       Doctor Subscription HTTP 真实环境测试        ${c.c}║${c.reset}`);
-  console.log(`${c.c}╚══════════════════════════════════════════════════════╝${c.reset}\n`);
+  console.log(`╔══════════════════════════════════════════════════════════╗`);
+  console.log(`║    Doctor Subscription HTTP Real Environment Test        ║`);
+  console.log(`╠══════════════════════════════════════════════════════════╣`);
+  console.log(`║ Mode: ${TEST_MODE.padEnd(51)} ║`);
+  console.log(`║ Target: ${TEST_BASE_URL.padEnd(49)} ║`);
+  console.log(`╚══════════════════════════════════════════════════════════╝\n`);
 
-  log(`测试目标: ${TEST_CONFIG.baseUrl}`, 'i');
-  console.log();
-
+  // Define tests
   const tests = [
-    { name: '健康检查端点', fn: testHealthEndpoint, critical: true },
-    { name: '订阅医生（医院已订阅）', fn: testDoctorSubscribeWithHospital },
-    { name: '订阅医生（医院未订阅）', fn: testDoctorSubscribeWithoutHospital },
-    { name: '使用别名订阅医生', fn: testDoctorSubscribeWithAlias },
-    { name: '列出已订阅医生', fn: testListDoctors },
-    { name: '按医院筛选医生', fn: testListDoctorsWithFilter },
-    { name: '取消订阅医生', fn: testUnsubscribeDoctor },
-    { name: '设置主要医生', fn: testSetPrimaryDoctor },
-    { name: '检查医生订阅状态', fn: testCheckDoctorSubscriptionStatus },
-    { name: '响应结构完整性', fn: testDoctorSubscriptionResponseStructure },
-    { name: '订阅多个医生', fn: testSubscribeMultipleDoctors },
-    { name: '性能测试', fn: testPerformance },
+    { name: 'Health Endpoint', fn: testHealthEndpoint, critical: true },
+    { name: 'Subscribe Doctor (Hospital Subscribed)', fn: testDoctorSubscribeWithHospital },
+    { name: 'Subscribe Doctor (Hospital Not Subscribed)', fn: testDoctorSubscribeWithoutHospital },
+    { name: 'Subscribe Doctor With Alias', fn: testDoctorSubscribeWithAlias },
+    { name: 'List Doctors', fn: testListDoctors },
+    { name: 'List Doctors With Filter', fn: testListDoctorsWithFilter },
+    { name: 'Unsubscribe Doctor', fn: testUnsubscribeDoctor },
+    { name: 'Set Primary Doctor', fn: testSetPrimaryDoctor },
+    { name: 'Check Doctor Subscription Status', fn: testCheckDoctorSubscriptionStatus },
+    { name: 'Response Structure', fn: testDoctorSubscriptionResponseStructure },
+    { name: 'Subscribe Multiple Doctors', fn: testSubscribeMultipleDoctors },
+    { name: 'Performance Test', fn: testPerformance },
   ];
 
-  const results: TestResult[] = [];
-  let criticalFailed = false;
+  // Run tests
+  const result = await runTestSuite('Doctor Subscription HTTP Tests', tests, {
+    beforeAll: async () => {
+      await startTestEnvironment();
+    },
+    afterAll: async () => {
+      await stopTestEnvironment();
+    },
+  });
 
-  for (const test of tests) {
-    if (criticalFailed && !test.critical) {
-      log(`\n━━━ ${test.name} ━━━`, 'b');
-      log('跳过（关键测试失败）', 'w');
-      results.push({ name: test.name, ok: false, err: 'Skipped due to critical failure' });
-      continue;
-    }
-
-    log(`\n━━━ ${test.name} ━━━`, 'b');
-    const result = await runTest(test.name, test.fn);
-    results.push(result);
-
-    if (result.ok) {
-      log(`✓ 通过 (${result.duration}ms)`, 's');
-    } else {
-      log(`✗ 失败: ${result.err}`, 'e');
-      if (test.critical) {
-        criticalFailed = true;
-        log('关键测试失败，后续测试将跳过', 'e');
-      }
-    }
-
-    await sleep(200);
-  }
-
-  // 报告
-  console.log(`\n${c.c}${'═'.repeat(56)}${c.reset}`);
-  console.log(`${c.b}                    测试汇总报告                        ${c.reset}`);
-  console.log(`${c.c}${'═'.repeat(56)}${c.reset}\n`);
-
-  for (const result of results) {
-    const icon = result.ok ? c.g + '✔' : c.r + '✗';
-    const status = result.ok ? '通过' : '失败';
-    console.log(`${icon} ${result.name}: ${status}${c.reset}`);
-    if (!result.ok && result.err && !result.err.includes('Skipped')) {
-      console.log(`  ${c.r}错误: ${result.err}${c.reset}`);
-    }
-  }
-
-  const passed = results.filter(r => r.ok).length;
-  const total = results.length;
-
-  console.log(`\n${c.c}${'═'.repeat(56)}${c.reset}`);
-  console.log(`${c.b}总计: ${total} | ${c.g}通过: ${passed}${c.reset} | ${c.r}失败: ${total - passed}${c.reset}`);
-  console.log(`${c.c}${'═'.repeat(56)}${c.reset}`);
-
-  if (passed === total) {
-    console.log(`\n${c.g}✨ 所有 HTTP 测试通过！${c.reset}\n`);
-  } else if (criticalFailed) {
-    console.log(`\n${c.r}⚠ 关键测试失败，请检查服务是否正常运行${c.reset}\n`);
-  } else {
-    console.log(`\n${c.y}⚠ 部分测试失败${c.reset}\n`);
-  }
-
-  process.exit(passed === total ? 0 : 1);
+  // Exit with appropriate code
+  process.exit(result.failed === 0 ? 0 : 1);
 }
 
-main().catch(e => {
-  log(`测试运行错误: ${e}`, 'e');
+main().catch((error) => {
+  console.error('Test execution failed:', error);
   process.exit(1);
 });

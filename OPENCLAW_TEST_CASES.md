@@ -15,7 +15,7 @@
 **目的**：验证新用户首次使用时显示欢迎消息
 
 **步骤**：
-1. 删除或重置订阅数据：删除 `~/.openclaw/repsclaw/hospital-subscriptions.json`
+1. 删除或重置订阅数据：删除 `~/.repsclaw/hospitals/` 目录下的 Markdown 文件
 2. 重启 OpenClaw
 3. 发送第一条消息触发欢迎提示
 
@@ -59,7 +59,7 @@
 
 **验证点**：
 - 日志中有 `Subscribed to hospital {"name":"北京协和医院","isPrimary":true}`
-- 文件 `~/.openclaw/repsclaw/hospital-subscriptions.json` 已创建且包含数据
+- 文件 `~/.repsclaw/hospitals/北京协和医院.md` 已创建且包含 YAML frontmatter 数据
 
 ---
 
@@ -228,26 +228,29 @@ openclaw 2>&1 | grep -E "(REPSCLAW:HOSPITAL|REPSCLAW:TOOL|REPSCLAW:RESOLVER)"
 ### 检查订阅数据
 
 ```bash
-cat ~/.openclaw/repsclaw/hospital-subscriptions.json
+ls ~/.repsclaw/hospitals/
+# 输出：北京协和医院.md  上海华山医院.md
+
+cat ~/.repsclaw/hospitals/北京协和医院.md
 ```
 
-预期格式：
-```json
-{
-  "hospitals": [
-    {
-      "name": "北京协和医院",
-      "subscribedAt": "2024-03-17T10:30:00.000Z",
-      "isPrimary": false
-    },
-    {
-      "name": "上海华山医院",
-      "subscribedAt": "2024-03-17T10:31:00.000Z",
-      "isPrimary": true
-    }
-  ],
-  "lastPromptedDate": "2024-03-17"
-}
+预期格式（Markdown + YAML frontmatter）：
+```markdown
+---
+name: 北京协和医院
+isPrimary: true
+subscribedAt: 2024-03-17T10:30:00.000Z
+lastPromptedDate: 2024-03-17
+lastQueryAt: null
+departments: []
+---
+
+# 北京协和医院
+
+## 订阅信息
+
+- 订阅时间: 2024-03-17T10:30:00.000Z
+- 是否主要医院: 是
 ```
 
 ### HTTP API 测试
@@ -286,7 +289,7 @@ grep "订阅工具已注册" ~/.openclaw/logs/openclaw.log
 **问题 3**：首次使用不显示欢迎消息
 
 **检查**：
-1. 删除 `hospital-subscriptions.json` 文件
+1. 删除 `~/.repsclaw/hospitals/` 目录下的所有 Markdown 文件
 2. 重启 OpenClaw
 3. 查看日志中 `isFirstTime: true`
 

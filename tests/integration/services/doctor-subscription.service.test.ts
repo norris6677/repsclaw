@@ -1,54 +1,27 @@
 #!/usr/bin/env tsx
 /**
  * Doctor Subscription Service Mock 集成测试
- * 测试医生订阅服务的完整流程
+ * 测试医生订阅服务的完整流程，使用内存数据库进行测试
  */
 
 import { DoctorSubscriptionService, DoctorSubscription } from '../../../src/services/doctor-subscription.service';
 import { HospitalSubscriptionService } from '../../../src/services/hospital-subscription.service';
+import { MemorySubscriptionDatabase } from '../../../src/services/subscription-db.memory';
+import type { ISubscriptionDatabase } from '../../../src/services/subscription-db.interface';
 import { TestSuite, assertEqual, assertTrue, assertExists, assertFalse, c } from '../../unit/test-utils';
-import * as fs from 'fs';
-import * as path from 'path';
 
 const suite = new TestSuite();
 
-// 测试用的临时存储路径
-const TEST_STORAGE_DIR = path.join(process.cwd(), 'tmp-test-doctor');
-const TEST_HOSPITAL_STORAGE = path.join(TEST_STORAGE_DIR, 'hospital-subscriptions.json');
-const TEST_DOCTOR_STORAGE = path.join(TEST_STORAGE_DIR, 'doctor-subscriptions.json');
-
-// 创建测试服务实例
+// 创建测试服务实例（使用内存数据库）
 function createTestServices() {
-  // 清理之前的测试数据并确保目录存在
-  cleanupTestData();
-  ensureTestDir();
+  // 创建独立的内存数据库实例
+  const testDB: ISubscriptionDatabase = new MemorySubscriptionDatabase();
 
-  // 修改环境变量以使用测试存储路径
-  const originalHome = process.env.HOME;
-  process.env.HOME = TEST_STORAGE_DIR;
-
-  const hospitalService = new HospitalSubscriptionService();
-  const doctorService = new DoctorSubscriptionService(hospitalService);
-
-  // 恢复环境变量
-  process.env.HOME = originalHome;
+  // 注入内存数据库到两个服务
+  const hospitalService = new HospitalSubscriptionService(testDB);
+  const doctorService = new DoctorSubscriptionService(hospitalService, testDB);
 
   return { hospitalService, doctorService };
-}
-
-// 清理测试数据
-function cleanupTestData() {
-  // 使用 recursive 删除整个测试目录
-  if (fs.existsSync(TEST_STORAGE_DIR)) {
-    fs.rmSync(TEST_STORAGE_DIR, { recursive: true, force: true });
-  }
-}
-
-// 确保测试目录存在
-function ensureTestDir() {
-  if (!fs.existsSync(TEST_STORAGE_DIR)) {
-    fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
-  }
 }
 
 // ===== 初始化测试 =====
@@ -56,7 +29,6 @@ function ensureTestDir() {
 suite.add('DoctorSubscriptionService - 初始化', async () => {
   const { doctorService } = createTestServices();
   assertExists(doctorService);
-  cleanupTestData();
 });
 
 // ===== 医院验证测试 =====
@@ -70,7 +42,6 @@ suite.add('DoctorSubscriptionService - 订阅医生前必须订阅医院', async
   assertFalse(result.success);
   assertExists(result.error);
   assertTrue(result.error!.includes('未订阅'));
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 医院别名解析', async () => {
@@ -84,7 +55,6 @@ suite.add('DoctorSubscriptionService - 医院别名解析', async () => {
 
   assertTrue(result.success);
   assertEqual(result.subscription!.hospital, '北京协和医院');
-  cleanupTestData();
 });
 
 // ===== 医生订阅测试 =====
@@ -102,7 +72,6 @@ suite.add('DoctorSubscriptionService - 订阅医生（医院已订阅）', async
   assertExists(result.subscription);
   assertEqual(result.subscription!.name, '张医生');
   assertEqual(result.subscription!.hospital, '北京协和医院');
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 订阅医生带科室', async () => {
@@ -114,7 +83,6 @@ suite.add('DoctorSubscriptionService - 订阅医生带科室', async () => {
 
   assertTrue(result.success);
   assertEqual(result.subscription!.department, '心内科');
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 第一个医生自动成为主要医生', async () => {
@@ -126,7 +94,6 @@ suite.add('DoctorSubscriptionService - 第一个医生自动成为主要医生',
 
   assertTrue(result.success);
   assertTrue(result.subscription!.isPrimary);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 重复订阅同一医生', async () => {
@@ -147,7 +114,6 @@ suite.add('DoctorSubscriptionService - 重复订阅同一医生', async () => {
   // 验证只保存了一个医生
   const doctors = doctorService.getDoctors();
   assertEqual(doctors.length, 1);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 更新已存在医生的科室', async () => {
@@ -164,7 +130,6 @@ suite.add('DoctorSubscriptionService - 更新已存在医生的科室', async ()
   assertTrue(result.success);
   assertTrue(result.isExisting);
   assertEqual(result.subscription!.department, '心内科');
-  cleanupTestData();
 });
 
 // ===== 查询测试 =====
@@ -182,7 +147,6 @@ suite.add('DoctorSubscriptionService - 获取所有订阅的医生', async () =>
   const doctors = doctorService.getDoctors();
 
   assertEqual(doctors.length, 3);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 按医院筛选医生', async () => {
@@ -199,7 +163,6 @@ suite.add('DoctorSubscriptionService - 按医院筛选医生', async () => {
 
   assertEqual(xieheDoctors.length, 2);
   assertTrue(xieheDoctors.every(d => d.hospital === '北京协和医院'));
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 查找医生', async () => {
@@ -214,7 +177,6 @@ suite.add('DoctorSubscriptionService - 查找医生', async () => {
   assertExists(found);
   assertEqual(found!.name, '张医生');
   assertEqual(notFound, null);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 检查是否已订阅', async () => {
@@ -226,7 +188,6 @@ suite.add('DoctorSubscriptionService - 检查是否已订阅', async () => {
   assertTrue(doctorService.isSubscribed('北京协和医院', '张医生'));
   assertFalse(doctorService.isSubscribed('北京协和医院', '李医生'));
   assertFalse(doctorService.isSubscribed('复旦大学附属华山医院', '张医生'));
-  cleanupTestData();
 });
 
 // ===== 主要医生测试 =====
@@ -243,7 +204,6 @@ suite.add('DoctorSubscriptionService - 获取主要医生', async () => {
 
   assertExists(primary);
   assertEqual(primary!.name, '张医生');
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 设置主要医生', async () => {
@@ -258,7 +218,6 @@ suite.add('DoctorSubscriptionService - 设置主要医生', async () => {
 
   assertTrue(result.success);
   assertEqual(doctorService.getPrimaryDoctor()!.name, '李医生');
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 设置未订阅的医生为主要', async () => {
@@ -268,7 +227,6 @@ suite.add('DoctorSubscriptionService - 设置未订阅的医生为主要', async
 
   assertFalse(result.success);
   assertExists(result.error);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 只有一个主要医生', async () => {
@@ -288,7 +246,6 @@ suite.add('DoctorSubscriptionService - 只有一个主要医生', async () => {
 
   assertEqual(primaryCount, 1);
   assertEqual(doctorService.getPrimaryDoctor()!.name, '医生C');
-  cleanupTestData();
 });
 
 // ===== 取消订阅测试 =====
@@ -303,7 +260,6 @@ suite.add('DoctorSubscriptionService - 取消订阅医生', async () => {
 
   assertTrue(result.success);
   assertEqual(doctorService.getDoctors().length, 0);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 取消未订阅的医生', async () => {
@@ -313,7 +269,6 @@ suite.add('DoctorSubscriptionService - 取消未订阅的医生', async () => {
 
   assertFalse(result.success);
   assertExists(result.error);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 取消主要医生后自动切换', async () => {
@@ -328,7 +283,6 @@ suite.add('DoctorSubscriptionService - 取消主要医生后自动切换', async
 
   assertEqual(doctorService.getDoctors().length, 1);
   assertEqual(doctorService.getPrimaryDoctor()!.name, '李医生');
-  cleanupTestData();
 });
 
 // ===== 统计测试 =====
@@ -349,7 +303,6 @@ suite.add('DoctorSubscriptionService - 获取统计信息', async () => {
   assertEqual(stats.byHospital['北京协和医院'], 2);
   assertEqual(stats.byHospital['复旦大学附属华山医院'], 1);
   assertExists(stats.primary);
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 首次使用检查', async () => {
@@ -364,7 +317,6 @@ suite.add('DoctorSubscriptionService - 首次使用检查', async () => {
 
   // 订阅后不再是首次使用
   assertFalse(doctorService.isFirstTime());
-  cleanupTestData();
 });
 
 // ===== 多医院场景测试 =====
@@ -395,7 +347,6 @@ suite.add('DoctorSubscriptionService - 同一医生名在不同医院', async ()
   assertExists(huashanDoctor);
   assertEqual(xieheDoctor!.name, '张医生');
   assertEqual(huashanDoctor!.name, '张医生');
-  cleanupTestData();
 });
 
 suite.add('DoctorSubscriptionService - 多医院主要医生切换', async () => {
@@ -415,33 +366,31 @@ suite.add('DoctorSubscriptionService - 多医院主要医生切换', async () =>
 
   assertEqual(doctorService.getPrimaryDoctor()!.hospital, '复旦大学附属华山医院');
   assertEqual(doctorService.getPrimaryDoctor()!.name, '王医生');
-  cleanupTestData();
 });
 
-// ===== 持久化测试 =====
+// ===== 持久化测试（使用内存数据库验证数据共享）=====
 
-suite.add('DoctorSubscriptionService - 数据持久化', async () => {
-  const { hospitalService, doctorService } = createTestServices();
+suite.add('DoctorSubscriptionService - 数据持久化（模拟重启）', async () => {
+  // 创建共享的内存数据库实例
+  const sharedDB: ISubscriptionDatabase = new MemorySubscriptionDatabase();
 
-  hospitalService.subscribe('北京协和医院');
-  doctorService.subscribe('北京协和医院', '张医生', '心内科');
+  // 第一个服务实例
+  const hospitalService1 = new HospitalSubscriptionService(sharedDB);
+  const doctorService1 = new DoctorSubscriptionService(hospitalService1, sharedDB);
 
-  // 创建新实例（模拟重启）
-  const originalHome = process.env.HOME;
-  process.env.HOME = TEST_STORAGE_DIR;
+  hospitalService1.subscribe('北京协和医院');
+  doctorService1.subscribe('北京协和医院', '张医生', '心内科');
 
-  const newHospitalService = new HospitalSubscriptionService();
-  const newDoctorService = new DoctorSubscriptionService(newHospitalService);
+  // 创建新实例（模拟重启），使用相同的数据库实例
+  const hospitalService2 = new HospitalSubscriptionService(sharedDB);
+  const doctorService2 = new DoctorSubscriptionService(hospitalService2, sharedDB);
 
-  process.env.HOME = originalHome;
-
-  // 验证数据已持久化
-  const doctors = newDoctorService.getDoctors();
+  // 验证数据已持久化（在内存中）
+  const doctors = doctorService2.getDoctors();
   assertEqual(doctors.length, 1);
   assertEqual(doctors[0].name, '张医生');
   assertEqual(doctors[0].hospital, '北京协和医院');
   assertEqual(doctors[0].department, '心内科');
-  cleanupTestData();
 });
 
 // 运行测试
@@ -450,21 +399,12 @@ async function main() {
   console.log(`${c.c}║${c.b}         Doctor Subscription Service 集成测试        ${c.c}║${c.reset}`);
   console.log(`${c.c}╚══════════════════════════════════════════════════════╝${c.reset}`);
 
-  // 确保测试目录存在
-  if (!fs.existsSync(TEST_STORAGE_DIR)) {
-    fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
-  }
-
   const success = await suite.run('Doctor Subscription Service 集成测试');
-
-  // 清理
-  cleanupTestData();
 
   process.exit(success ? 0 : 1);
 }
 
 main().catch((e) => {
   console.error('测试运行错误:', e);
-  cleanupTestData();
   process.exit(1);
 });

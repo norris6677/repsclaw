@@ -1,8 +1,10 @@
 {
   "id": "repsclaw",
   "name": "Repsclaw Healthcare Plugin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Healthcare data integration with FDA, PubMed, Clinical Trials, and Medical Terminology APIs",
+  "kind": "tool",
+  "enabledByDefault": true,
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

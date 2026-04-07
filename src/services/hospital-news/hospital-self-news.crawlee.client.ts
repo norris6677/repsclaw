@@ -2,7 +2,9 @@ import {
   CheerioCrawler,
   RequestQueue,
   CheerioCrawlingContext,
+  Configuration,
 } from 'crawlee';
+import { HeaderGenerator } from 'header-generator';
 import {
   NewsSourceClient,
   NewsSourceType,
@@ -10,8 +12,22 @@ import {
   HospitalNewsItem,
 } from '../../types/hospital-news.types';
 import { createLogger } from '../../utils/plugin-logger';
+import { CRAWLEE_STORAGE_DIR, ensureDataDirectories } from '../../config/data-paths.config';
 
 const logger = createLogger('REPSCLAW:HOSPITAL-NEWS');
+
+// 配置 Crawlee 使用统一的数据目录
+const crawleeConfig = new Configuration({
+  storageDir: CRAWLEE_STORAGE_DIR,
+});
+
+// 创建 header 生成器实例
+const headerGenerator = new HeaderGenerator({
+  browsers: ['chrome', 'firefox'],
+  devices: ['desktop'],
+  locales: ['zh-CN'],
+  operatingSystems: ['windows', 'macos'],
+});
 
 /**
  * 医院自媒体/官网新闻客户端 (Crawlee 版本)
@@ -25,9 +41,10 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
   sourceType = NewsSourceType.HOSPITAL_SELF;
   priority = 1;
 
-  // Top 100 医院官网映射表（更新后的 URL）
-  private hospitalUrlMap: Map<string, string> = new Map([
-    ['北京协和医院', 'https://www.pumch.cn/xwzx/xwdt/'],
+  // Top 100 医院官网映射表
+  // 注意：部分医院使用CDN/WAF，URL可能变动，需要定期验证
+  private hospitalUrlMap: Map<string, string | null> = new Map([
+    ['北京协和医院', null], // 官网使用动态加载/WAF，需特殊处理
     ['四川大学华西医院', 'https://www.wchscu.cn/Home/NewsList'],
     ['复旦大学附属中山医院', 'https://www.zs-hospital.sh.cn/news/'],
     ['上海交通大学医学院附属瑞金医院', 'https://www.rjh.com.cn/xwzx/yydt/'],
@@ -121,6 +138,9 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
     cutoffDate.setDate(cutoffDate.getDate() - days);
     const allNames = [hospitalName, ...aliases];
 
+    // 确保数据目录存在
+    ensureDataDirectories();
+
     // 创建请求队列
     const requestQueue = await RequestQueue.open(`hospital-news-${Date.now()}`);
     await requestQueue.addRequest({ url: newsUrl });
@@ -128,6 +148,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
     // 配置 Crawlee 爬虫
     const crawler = new CheerioCrawler({
       requestQueue,
+      configuration: crawleeConfig,
 
       // 限制
       maxRequestsPerCrawl: 1, // 只爬取入口页
@@ -141,17 +162,22 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
         },
       },
 
-      // 浏览器指纹伪装
-      headerGeneratorOptions: {
-        browsers: ['chrome', 'firefox'],
-        devices: ['desktop'],
-        locales: ['zh-CN'],
-        operatingSystems: ['windows', 'macos'],
-      },
-
       // 错误处理
       maxRequestRetries: 3,
       retryOnBlocked: true,
+
+      // 预处理请求 - 使用 header-generator
+      preNavigationHooks: [
+        async ({ request }) => {
+          // 1-3秒随机延迟，模拟真实用户行为
+          const delay = 1000 + Math.random() * 2000;
+          await new Promise(resolve => setTimeout(resolve, delay));
+
+          const headers = headerGenerator.getHeaders();
+          request.headers ??= {};
+          Object.assign(request.headers, headers);
+        },
+      ],
 
       // 请求处理器
       requestHandler: async ({ request, $, response }: CheerioCrawlingContext) => {
@@ -240,7 +266,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
       failedRequestHandler({ request }, error: Error) {
         logger.error(`[Crawlee] 医院新闻请求失败: ${request.url}`, error);
       },
-    }, this.config);
+    });
 
     // 运行爬虫
     await crawler.run();
@@ -254,16 +280,19 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
   private getHospitalNewsUrl(hospitalName: string): string | null {
     // 1. 先查映射表
     const mappedUrl = this.hospitalUrlMap.get(hospitalName);
-    if (mappedUrl) return mappedUrl;
+    if (mappedUrl !== undefined) {
+      // 明确设置为null表示该医院已知但暂不支持爬取（如WAF保护）
+      return mappedUrl;
+    }
 
     // 2. 尝试用别名查找
     for (const [name, url] of this.hospitalUrlMap) {
-      if (hospitalName.includes(name) || name.includes(hospitalName)) {
+      if ((hospitalName.includes(name) || name.includes(hospitalName)) && url !== null) {
         return url;
       }
     }
 
-    // 3. 尝试构造 URL
+    // 3. 尝试构造 URL（仅对未明确列出的医院）
     const pinyin = this.toPinyin(hospitalName);
     return `https://www.${pinyin}.com/xwzx/`;
   }

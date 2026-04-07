@@ -278,6 +278,8 @@ suite.add('HospitalNewsService - sourceStats统计', async () => {
   assertExists(result.sourceStats[NewsSourceType.HOSPITAL_SELF] !== undefined);
   assertExists(result.sourceStats[NewsSourceType.OFFICIAL] !== undefined);
   assertExists(result.sourceStats[NewsSourceType.MAINSTREAM] !== undefined);
+  assertExists(result.sourceStats[NewsSourceType.BAIDU_SEARCH] !== undefined);
+  assertExists(result.sourceStats[NewsSourceType.WECHAT_SEARCH] !== undefined);
   assertExists(result.sourceStats[NewsSourceType.AGGREGATOR] !== undefined);
 });
 
@@ -303,7 +305,41 @@ suite.add('HospitalNewsService - 返回结果结构完整', async () => {
   assertExists(result.meta);
 });
 
-// ===== 多医院测试 =====
+suite.add('HospitalNewsService - 指定百度搜索和微信搜索', async () => {
+  const service = new HospitalNewsService();
+
+  const result = await service.getNews({
+    hospitalName: '北京协和医院',
+    sources: [NewsSourceType.BAIDU_SEARCH, NewsSourceType.WECHAT_SEARCH],
+    days: 7,
+    maxResults: 10,
+  });
+
+  assertEqual(result.status, 'success');
+  assertTrue(result.query.sources.includes(NewsSourceType.BAIDU_SEARCH));
+  assertTrue(result.query.sources.includes(NewsSourceType.WECHAT_SEARCH));
+});
+
+suite.add('HospitalNewsService - 使用所有数据源包括新类型', async () => {
+  const service = new HospitalNewsService();
+
+  const result = await service.getNews({
+    hospitalName: '北京协和医院',
+    sources: [
+      NewsSourceType.HOSPITAL_SELF,
+      NewsSourceType.OFFICIAL,
+      NewsSourceType.MAINSTREAM,
+      NewsSourceType.BAIDU_SEARCH,
+      NewsSourceType.WECHAT_SEARCH,
+      NewsSourceType.AGGREGATOR,
+    ],
+    days: 7,
+    maxResults: 10,
+  });
+
+  assertEqual(result.status, 'success');
+  assertEqual(result.query.sources.length, 6);
+});
 
 suite.add('HospitalNewsService - 查询不同医院', async () => {
   const service = new HospitalNewsService();

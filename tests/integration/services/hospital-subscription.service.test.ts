@@ -1,51 +1,22 @@
 #!/usr/bin/env tsx
 /**
  * Hospital Subscription Service Mock 集成测试
- * 测试医院订阅服务的完整流程，包括持久化存储
+ * 测试医院订阅服务的完整流程，使用 Memory 数据库进行测试
  */
 
 import { HospitalSubscriptionService } from '../../../src/services/hospital-subscription.service';
+import { MemorySubscriptionDatabase } from '../../../src/services/subscription-db.memory';
+import type { ISubscriptionDatabase } from '../../../src/services/subscription-db.interface';
 import { TestSuite, assertEqual, assertTrue, assertExists, assertFalse, c } from '../../unit/test-utils';
-import * as fs from 'fs';
-import * as path from 'path';
 
 const suite = new TestSuite();
 
-// 使用临时存储路径进行测试
-const TEST_STORAGE_PATH = '/tmp/.openclaw/repsclaw-test/hospital-subscriptions.json';
-
-// 临时覆盖服务存储路径
+// 创建测试服务实例（使用内存数据库）
 function createTestService(): HospitalSubscriptionService {
-  const service = new HospitalSubscriptionService();
-  // 覆盖存储路径（通过修改原型访问私有属性）
-  (service as any).storagePath = TEST_STORAGE_PATH;
-  // 重置数据
-  (service as any).data = { hospitals: [], lastPromptedDate: null };
+  const testDB: ISubscriptionDatabase = new MemorySubscriptionDatabase();
+  const service = new HospitalSubscriptionService(testDB);
   return service;
 }
-
-// 清理测试数据
-function cleanupTestData() {
-  try {
-    const dir = path.dirname(TEST_STORAGE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    if (fs.existsSync(TEST_STORAGE_PATH)) {
-      fs.unlinkSync(TEST_STORAGE_PATH);
-    }
-  } catch {
-    // ignore
-  }
-}
-
-suite.beforeEach(() => {
-  cleanupTestData();
-});
-
-suite.afterEach(() => {
-  cleanupTestData();
-});
 
 // ===== 初始化测试 =====
 
@@ -218,6 +189,9 @@ suite.add('HospitalSubscriptionService - 首次使用检查', async () => {
 suite.add('HospitalSubscriptionService - 提示日期管理', async () => {
   const service = createTestService();
 
+  // 需要先订阅医院才能设置提示日期
+  service.subscribe('北京协和医院');
+
   assertFalse(service.hasPromptedToday());
 
   service.updateLastPromptedDate();
@@ -249,20 +223,22 @@ suite.add('HospitalSubscriptionService - 通过别名查找医院', async () => 
   assertEqual(match?.name, '复旦大学附属华山医院');
 });
 
-// ===== 持久化测试 =====
+// ===== 持久化测试（使用内存数据库验证数据共享）=====
 
-suite.add('HospitalSubscriptionService - 数据持久化', async () => {
-  // 创建服务并添加数据
-  const service1 = createTestService();
+suite.add('HospitalSubscriptionService - 数据持久化（模拟重启）', async () => {
+  // 创建共享的内存数据库实例
+  const sharedDB: ISubscriptionDatabase = new MemorySubscriptionDatabase();
+
+  // 第一个服务实例
+  const service1 = new HospitalSubscriptionService(sharedDB);
   service1.subscribe('北京协和医院');
   service1.subscribe('华山医院');
   service1.updateLastPromptedDate();
 
-  // 创建新服务实例（模拟重启）
-  const service2 = createTestService();
-  // 手动加载数据
-  (service2 as any).data = (service1 as any).data;
+  // 创建新服务实例（模拟重启），使用相同的数据库实例
+  const service2 = new HospitalSubscriptionService(sharedDB);
 
+  // 验证数据已持久化（在内存中）
   const hospitals = service2.getHospitals();
   assertEqual(hospitals.length, 2);
   assertTrue(service2.isSubscribed('北京协和医院'));

@@ -1,6 +1,6 @@
 {
   "name": "repsclaw",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OpenClaw Plugin System - RAG, Compliance & Crawler Services",
   "main": "index.ts",
   "scripts": {
@@ -46,7 +46,10 @@
     "test:hospital:all": "npm run test:hospital && npm run test:hospital:cli",
     "cli:build": "tsx scripts/build-cli.ts",
     "cli:docs": "tsx scripts/update-docs.ts",
-    "cli:test": "./bin/repsclaw --help"
+    "cli:test": "./bin/repsclaw --help",
+    "deploy": "./deploy.sh",
+    "deploy:local": "DEPLOY_MODE=local ./deploy.sh",
+    "deploy:remote": "DEPLOY_MODE=remote ./deploy.sh"
   },
   "keywords": [
     "openclaw",
@@ -73,6 +76,7 @@
     "fastify": "^4.26.2",
     "fastify-plugin": "^4.5.1",
     "fs-extra": "^11.2.0",
+    "header-generator": "^2.1.81",
     "playwright": "^1.58.2",
     "zod": "^3.22.4",
     "zod-to-json-schema": "^3.25.1"
@@ -91,7 +95,10 @@
   },
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      {
+        "id": "repsclaw",
+        "entry": "./index.ts"
+      }
     ]
   }
 }

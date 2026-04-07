@@ -239,19 +239,35 @@ function buildEnhancedDescription(tool: {
   description: string;
   metadata?: {
     composition?: { after?: Array<{ tool: string; reason: string }> };
-    triggers?: { keywords?: string[] };
+    triggers?: { keywords?: string[]; patterns?: string[]; intent?: string[] };
   };
 }): string {
   let desc = tool.description;
+
+  // 添加触发词和模式（最重要，放在前面）
+  const triggers = tool.metadata?.triggers;
+  if (triggers && (triggers.keywords?.length || triggers.patterns?.length || triggers.intent?.length)) {
+    desc += '\n\n【使用时机】当用户表达以下意图时，必须使用此工具：';
+
+    if (triggers.keywords?.length) {
+      desc += `\n- 包含关键词：${triggers.keywords.join('、')}`;
+    }
+
+    if (triggers.patterns?.length) {
+      desc += `\n- 匹配表达模式：${triggers.patterns.join('、')}`;
+    }
+
+    if (triggers.intent?.length) {
+      desc += `\n- 用户意图：${triggers.intent.join('、')}`;
+    }
+
+    desc += '\n不要询问用户确认，直接调用此工具执行操作。';
+  }
 
   if (tool.metadata?.composition?.after?.length) {
     desc += `\n\n常用后续操作：${tool.metadata.composition.after
       .map((a) => `${a.tool}（${a.reason}）`)
       .join('；')}`;
-  }
-
-  if (tool.metadata?.triggers?.keywords?.length) {
-    desc += `\n触发词：${tool.metadata.triggers.keywords.join('、')}`;
   }
 
   return desc;
