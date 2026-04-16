@@ -16,6 +16,7 @@ import { HospitalNameResolver } from '../../utils/hospital-name-resolver';
 import { createLogger } from '../../utils/plugin-logger';
 import { subscriptionDB as defaultSubscriptionDB } from '../subscription-db.service';
 import type { ISubscriptionDatabase } from '../subscription-db.interface';
+import type { LLMClient } from '../llm-client';
 
 const logger = createLogger('REPSCLAW:NEWS-SERVICE');
 
@@ -35,15 +36,15 @@ export class HospitalNewsService {
   private readonly CACHE_TTL = 2 * 60 * 60 * 1000; // 2小时
   private subscriptionDB: ISubscriptionDatabase;
 
-  constructor(subscriptionDB?: ISubscriptionDatabase) {
+  constructor(subscriptionDB?: ISubscriptionDatabase, llmClient?: LLMClient) {
     this.subscriptionDB = subscriptionDB || defaultSubscriptionDB;
     this.hospitalResolver = new HospitalNameResolver();
     this.clients = [
-      new HospitalSelfNewsClient(),           // 优先级1: 医院官网
-      new OfficialNewsPlaywrightClient(),     // 优先级2: 政府网站（使用Playwright应对JS挑战）
-      new MainstreamNewsClient(),             // 优先级3: 主流媒体
-      new BaiduSearchClient(this.subscriptionDB),  // 优先级4: 百度搜索（补充覆盖）
-      new WechatSearchClient(this.subscriptionDB), // 优先级5: 搜狗微信（公众号内容）
+      new HospitalSelfNewsClient(undefined, llmClient), // 优先级1: 医院官网
+      new OfficialNewsPlaywrightClient(llmClient),      // 优先级2: 政府网站（使用Playwright应对JS挑战）
+      new MainstreamNewsClient(),                       // 优先级3: 主流媒体
+      new BaiduSearchClient(this.subscriptionDB),       // 优先级4: 百度搜索（补充覆盖）
+      new WechatSearchClient(this.subscriptionDB),      // 优先级5: 搜狗微信（公众号内容）
     ];
   }
 
@@ -82,7 +83,13 @@ export class HospitalNewsService {
     // 5. 确定要查询的数据源
     const sourceTypes = params.sources?.length
       ? params.sources
-      : [NewsSourceType.HOSPITAL_SELF, NewsSourceType.OFFICIAL, NewsSourceType.MAINSTREAM];
+      : [
+          NewsSourceType.HOSPITAL_SELF,
+          NewsSourceType.OFFICIAL,
+          NewsSourceType.MAINSTREAM,
+          NewsSourceType.BAIDU_SEARCH,
+          NewsSourceType.WECHAT_SEARCH,
+        ];
 
     const activeClients = this.clients.filter(c => sourceTypes.includes(c.sourceType));
 
@@ -91,7 +98,7 @@ export class HospitalNewsService {
       hospitalName: resolved.name,
       aliases: resolved.aliases,
       days: Math.min(Math.max(params.days || 7, 1), 90),
-      maxResults: params.maxResults || 10,
+      maxResults: params.maxResults || 50,
       keywords: params.keywords,
       departments, // 传入科室过滤
       doctors, // 传入医生过滤
@@ -137,12 +144,16 @@ export class HospitalNewsService {
     // 9. 排序和去重
     const sortedNews = this.sortAndDeduplicate(filteredNews);
 
-    // 10. 截断结果
-    const finalResults = sortedNews.slice(0, params.maxResults || 10);
+    // 10. 截断结果（默认放宽到50，如需大量采集可通过参数指定更大值）
+    const finalResults = sortedNews.slice(0, params.maxResults || 50);
 
     // 11. 更新查询时间和缓存结果（用于下次增量）
     this.subscriptionDB.updateLastQueryTime(resolved.name);
-    this.subscriptionDB.cacheNews(finalResults);
+    const resultsToCache = finalResults.map(r => ({
+      ...r,
+      hospitalName: resolved.name,
+    }));
+    this.subscriptionDB.cacheNews(resultsToCache);
 
     // 12. 构建响应
     const response: HospitalNewsResult = {
@@ -194,8 +205,8 @@ export class HospitalNewsService {
 
     for (const item of items) {
       // 使用URL去重
-      const normalizedUrl = item.originalUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
-      if (seen.has(normalizedUrl)) continue;
+      const normalizedUrl = item.originalUrl?.replace(/^https?:\/\//, '').replace(/\/$/, '');
+      if (!normalizedUrl || seen.has(normalizedUrl)) continue;
 
       // 检查标题相似度（简单版：完全相同或包含关系）
       const isDuplicate = unique.some(u =>

@@ -1,0 +1,891 @@
+/**
+ * Collection Worker - Enhanced Version
+ * Worker 线程实现 - 执行实际采集任务（增强版）
+ *
+ * 强化改进：
+ * 1. 微信搜索增强反爬策略（验证码处理、长超时、智能跳转解析）
+ * 2. 医院官网智能分段采集（首页分块、Sitemap解析、去重优化）
+ * 3. 多维度搜索关键词组合
+ * 4. 百度搜索分页采集
+ * 5. 修复重复触发问题
+ */
+
+import { parentPort, workerData } from 'worker_threads';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
+import { chromium, Browser, Page } from 'playwright';
+import type {
+  CollectionJobConfig,
+  CollectionStrategy,
+  CollectionSourceType,
+  RawSourceMetadata,
+} from '../../types/knowledge-collection.types';
+import { RawSourceManager } from './raw-source.manager';
+import { hashUrl, hashTitle } from '../../utils/deduplication';
+
+// Worker 接收的参数
+const { jobId, config, strategy, storagePath } = workerData as {
+  jobId: string;
+  config: CollectionJobConfig;
+  strategy: CollectionStrategy;
+  storagePath: string;
+};
+
+// 初始化管理器
+const rawSourceManager = new RawSourceManager();
+
+// 统计
+let progress = {
+  total: 0,
+  completed: 0,
+  failed: 0,
+  duplicates: 0,
+};
+
+// 数据源结果收集
+const sourceResults = new Map<string, RawSourceMetadata[]>();
+
+// 请求计数
+let requestCount = 0;
+
+// 数据源开始时间
+let sourceStartTime = Date.now();
+
+// 标记是否已完成
+let isCompleted = false;
+
+// 微信搜索专用Cookie（用于维持会话）
+let wechatCookies: { name: string; value: string; domain: string }[] = [];
+
+/**
+ * 发送进度更新
+ */
+function reportProgress() {
+  if (isCompleted) return;
+  parentPort?.postMessage({ type: 'progress', data: progress });
+}
+
+/**
+ * 发送结果
+ */
+function reportResult(metadata: RawSourceMetadata) {
+  if (isCompleted) return;
+  parentPort?.postMessage({ type: 'result', data: metadata });
+}
+
+/**
+ * 发送错误
+ */
+function reportError(source: string, message: string, retryCount: number) {
+  if (isCompleted) return;
+  parentPort?.postMessage({
+    type: 'error',
+    data: { source, message, retryCount, timestamp: new Date().toISOString() },
+  });
+}
+
+/**
+ * 发送数据源完成事件
+ */
+function reportSourceComplete(sourceType: CollectionSourceType, items: RawSourceMetadata[]) {
+  if (isCompleted) return;
+  const duration = Date.now() - sourceStartTime;
+  parentPort?.postMessage({ type: 'source_complete', data: { sourceType, items, duration } });
+  sourceStartTime = Date.now();
+}
+
+/**
+ * 发送完成消息
+ */
+function reportComplete() {
+  if (isCompleted) return;
+  isCompleted = true;
+  parentPort?.postMessage({ type: 'complete' });
+}
+
+/**
+ * 随机延迟
+ */
+async function randomDelay(minMs?: number, maxMs?: number): Promise<void> {
+  const min = minMs || strategy.minDelay;
+  const max = maxMs || strategy.maxDelay;
+  const delay = min + Math.random() * (max - min);
+  await new Promise(resolve => setTimeout(resolve, delay));
+}
+
+/**
+ * 获取随机 User-Agent
+ */
+function getRandomUserAgent(): string {
+  const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+  ];
+  return userAgents[Math.floor(Math.random() * userAgents.length)];
+}
+
+/**
+ * 指数退避延迟
+ */
+async function exponentialBackoffDelay(retryCount: number): Promise<void> {
+  const delay = Math.min(strategy.baseRetryDelay * Math.pow(2, retryCount), strategy.maxRetryDelay);
+  await new Promise(resolve => setTimeout(resolve, delay));
+}
+
+/**
+ * 检查请求限制
+ */
+function checkRequestLimit(): boolean {
+  if (strategy.dailyRequestLimit && requestCount >= strategy.dailyRequestLimit) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 使用 Playwright 获取页面（增强版）
+ */
+async function fetchWithPlaywright(
+  url: string,
+  options: { timeout?: number; waitForSelector?: string; solveCaptcha?: boolean } = {}
+): Promise<{ html: string; title: string; finalUrl: string } | null> {
+  const timeout = options.timeout || 60000; // 默认60秒超时
+  const browser = await chromium.launch({ 
+    headless: true,
+    args: ['--disable-blink-features=AutomationControlled', '--no-sandbox']
+  });
+
+  try {
+    const context = await browser.newContext({
+      userAgent: getRandomUserAgent(),
+      viewport: { width: 1366, height: 768 },
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+    });
+
+    // 设置Cookie（微信搜索使用）
+    if (wechatCookies.length > 0 && url.includes('sogou')) {
+      await context.addCookies(wechatCookies);
+    }
+
+    const page = await context.newPage();
+
+    // 拦截不必要的资源
+    await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf,otf,eot}', route => route.abort());
+
+    console.log(`[Worker ${jobId}] Playwright navigating to: ${url}`);
+
+    const response = await page.goto(url, {
+      waitUntil: 'networkidle',
+      timeout: timeout,
+    });
+
+    // 等待页面稳定
+    await page.waitForTimeout(3000);
+
+    // 检查是否需要验证码
+    const pageContent = await page.content();
+    if (pageContent.includes('验证码') || pageContent.includes('captcha') || pageContent.includes('请输入')) {
+      console.log(`[Worker ${jobId}] Captcha detected on ${url}, waiting for manual solve...`);
+      // 等待更长时间，让验证码有机会自动通过或手动处理
+      await page.waitForTimeout(10000);
+    }
+
+    // 如果指定了选择器，等待其出现
+    if (options.waitForSelector) {
+      try {
+        await page.waitForSelector(options.waitForSelector, { timeout: 10000 });
+      } catch {
+        console.log(`[Worker ${jobId}] Selector ${options.waitForSelector} not found, continuing...`);
+      }
+    }
+
+    const html = await page.content();
+    const title = await page.title();
+    const finalUrl = page.url();
+
+    // 保存Cookie供下次使用
+    if (url.includes('sogou')) {
+      wechatCookies = await context.cookies();
+    }
+
+    requestCount++;
+    return { html, title, finalUrl };
+  } catch (error) {
+    console.error(`[Worker ${jobId}] Playwright error for ${url}:`, (error as Error).message);
+    return null;
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * 执行 HTTP 请求（带重试）
+ */
+async function fetchWithRetry(
+  url: string,
+  usePlaywright: boolean = false,
+  timeout?: number
+): Promise<{ html: string; title: string } | null> {
+  let lastError: Error | null = null;
+
+  for (let retry = 0; retry <= strategy.maxRetries; retry++) {
+    if (!checkRequestLimit()) {
+      throw new Error('Daily request limit reached');
+    }
+
+    try {
+      if (retry > 0) {
+        await exponentialBackoffDelay(retry);
+      } else {
+        await randomDelay();
+      }
+
+      if (usePlaywright) {
+        const result = await fetchWithPlaywright(url, { timeout });
+        if (result) {
+          return { html: result.html, title: result.title };
+        }
+        return null;
+      } else {
+        const response = await axios.get(url, {
+          timeout: timeout || strategy.timeout,
+          headers: {
+            'User-Agent': getRandomUserAgent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+          },
+          maxRedirects: 5,
+        });
+
+        requestCount++;
+        const $ = cheerio.load(response.data);
+        const title = $('title').text().trim() || $('h1').first().text().trim() || '';
+        return { html: response.data, title };
+      }
+    } catch (error) {
+      lastError = error as Error;
+      reportError(url, `Attempt ${retry + 1} failed: ${lastError.message}`, retry);
+      if (retry >= strategy.maxRetries) break;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 提取主要内容（增强版）
+ */
+function extractMainContent(html: string, url?: string): string {
+  const $ = cheerio.load(html);
+
+  // 移除脚本和样式
+  $('script, style, nav, footer, header, aside, .ads, .advertisement, iframe').remove();
+
+  // 尝试找到主要内容
+  const selectors = [
+    'article',
+    'main',
+    '[role="main"]',
+    '.content-detail',
+    '.article-content',
+    '.post-content',
+    '.news-content',
+    '#content',
+    '#main-content',
+    '.detail',
+    '.text',
+  ];
+
+  for (const selector of selectors) {
+    const element = $(selector).first();
+    const text = element.text().trim();
+    if (text.length > 100) {
+      return text;
+    }
+  }
+
+  // 默认返回 body 文本（清理后）
+  return $('body').text().trim().replace(/\s+/g, ' ').substring(0, 10000);
+}
+
+/**
+ * 解析搜狗微信跳转链接获取真实URL
+ */
+async function resolveSogouLink(sogouUrl: string): Promise<string | null> {
+  try {
+    // 搜狗链接格式：https://weixin.sogou.com/link?url=xxx
+    const result = await fetchWithPlaywright(sogouUrl, { timeout: 30000 });
+    if (result) {
+      // 最终URL应该是微信公众号文章链接
+      if (result.finalUrl.includes('mp.weixin.qq.com')) {
+        return result.finalUrl;
+      }
+      // 解析HTML中的跳转链接
+      const $ = cheerio.load(result.html);
+      const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
+      if (metaRefresh) {
+        const match = metaRefresh.match(/url=(.+)/);
+        if (match) return match[1];
+      }
+    }
+    return sogouUrl;
+  } catch {
+    return sogouUrl;
+  }
+}
+
+import { CollectionTargetType } from '../../types/knowledge-collection.types';
+
+/**
+ * 构建多维度搜索查询
+ */
+function buildSearchQueries(): string[] {
+  const { hospitalName, targetType, targetName } = config;
+  const queries: string[] = [];
+
+  switch (targetType) {
+    case CollectionTargetType.DOCTOR:
+      queries.push(`${hospitalName} ${targetName} 医生`);
+      queries.push(`${hospitalName} ${targetName} 专家介绍`);
+      queries.push(`${hospitalName} ${targetName} 出诊`);
+      queries.push(`${hospitalName} ${targetName} 论文`);
+      break;
+
+    case CollectionTargetType.DEPARTMENT:
+      queries.push(`${hospitalName} ${targetName} 科室`);
+      queries.push(`${hospitalName} ${targetName} 专家`);
+      queries.push(`${hospitalName} ${targetName} 技术`);
+      break;
+
+    default:
+      queries.push(`${hospitalName}`);
+      queries.push(`${hospitalName} 新闻`);
+      queries.push(`${hospitalName} 科室`);
+      queries.push(`${hospitalName} 专家介绍`);
+      queries.push(`${hospitalName} 医疗技术`);
+      queries.push(`${hospitalName} 科研成果`);
+      queries.push(`${hospitalName} 招聘公告`);
+      queries.push(`${hospitalName} 荣誉`);
+      break;
+  }
+
+  return queries;
+}
+
+/**
+ * 获取目标描述
+ */
+function getTargetDescription(): string {
+  const { hospitalName, targetType, targetName } = config;
+  switch (targetType) {
+    case CollectionTargetType.DOCTOR:
+      return `${hospitalName} - ${targetName}（医生）`;
+    case CollectionTargetType.DEPARTMENT:
+      return `${hospitalName} - ${targetName}（科室）`;
+    default:
+      return hospitalName;
+  }
+}
+
+/**
+ * 获取关联的医生列表
+ */
+function getRelatedDoctors(): string[] | undefined {
+  const { targetType, targetName, doctors } = config;
+  if (targetType === CollectionTargetType.DOCTOR && targetName) {
+    return [targetName];
+  }
+  return doctors;
+}
+
+/**
+ * 获取关联的科室列表
+ */
+function getRelatedDepartments(): string[] | undefined {
+  const { targetType, targetName, departments } = config;
+  if (targetType === CollectionTargetType.DEPARTMENT && targetName) {
+    return [targetName];
+  }
+  return departments;
+}
+
+/**
+ * 医院官网配置（增强版）
+ */
+const hospitalConfigMap: Record<string, {
+  baseUrl: string;
+  startUrls: string[];
+  linkSelectors: string[];
+  contentSelectors: string[];
+  maxLinksPerPage: number;
+  sitemapUrl?: string;
+}> = {
+  '北京协和医院': {
+    baseUrl: 'https://www.pumch.cn',
+    startUrls: [
+      'https://www.pumch.cn',
+      'https://www.pumch.cn/news.html',
+      'https://www.pumch.cn/department.html',
+      'https://www.pumch.cn/doctor.html',
+      'https://www.pumch.cn/research.html',
+      'https://www.pumch.cn/notice.html',
+      'https://www.pumch.cn/medical.html',
+    ],
+    linkSelectors: [
+      'a[href*="/news/"]',
+      'a[href*="/department/"]',
+      'a[href*="/doctor/"]',
+      'a[href*="/research/"]',
+      'a[href*="/notice/"]',
+      'a[href*="/medical/"]',
+      'a[href*="/article/"]',
+    ],
+    contentSelectors: ['.news-content', '.dept-detail', '.doctor-detail', '.article-content'],
+    maxLinksPerPage: 15,
+  },
+};
+
+/**
+ * 规范化URL（去除锚点等）
+ */
+function normalizeUrl(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    urlObj.hash = ''; // 去除锚点
+    return urlObj.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * 采集医院官网（增强版）
+ */
+async function collectHospitalOfficial(hospitalName: string, depth: number = 3): Promise<void> {
+  sourceStartTime = Date.now();
+  const items: RawSourceMetadata[] = [];
+
+  const hospitalConfig = hospitalConfigMap[hospitalName];
+  if (!hospitalConfig) {
+    reportError(hospitalName, 'Hospital config not found', 0);
+    reportSourceComplete('hospital_official' as CollectionSourceType, []);
+    return;
+  }
+
+  const { baseUrl, startUrls, linkSelectors, maxLinksPerPage } = hospitalConfig;
+  const doctors = getRelatedDoctors();
+  const departments = getRelatedDepartments();
+
+  // BFS队列
+  const urlQueue: Array<{ url: string; depth: number }> = 
+    startUrls.map(url => ({ url, depth: 1 }));
+  const crawledUrls = new Set<string>();
+  const discoveredUrls = new Set<string>();
+
+  console.log(`[Worker ${jobId}] Hospital: ${hospitalName}, URLs: ${startUrls.length}, depth: ${depth}`);
+
+  while (urlQueue.length > 0 && progress.completed < (config.maxResults || 100)) {
+    const { url, depth: currentDepth } = urlQueue.shift()!;
+    const normalizedUrl = normalizeUrl(url);
+
+    if (crawledUrls.has(normalizedUrl)) continue;
+    if (currentDepth > depth) continue;
+
+    console.log(`[Worker ${jobId}] Crawling [${currentDepth}/${depth}]: ${url}`);
+
+    const result = await fetchWithRetry(url, true, 45000);
+    if (!result) {
+      progress.failed++;
+      continue;
+    }
+
+    crawledUrls.add(normalizedUrl);
+
+    // 检查重复
+    const dupCheck = rawSourceManager.checkDuplicate(normalizedUrl, result.title);
+    if (dupCheck.isDuplicate) {
+      progress.duplicates++;
+      console.log(`[Worker ${jobId}] Duplicate skipped: ${result.title}`);
+    } else {
+      const content = extractMainContent(result.html, url);
+      
+      // 过滤掉内容太短的页面
+      if (content.length < 50) {
+        console.log(`[Worker ${jobId}] Content too short, skipped: ${url}`);
+      } else {
+        const metadata = rawSourceManager.saveRawSource({
+          sourceType: 'hospital_official' as CollectionSourceType,
+          url: normalizedUrl,
+          title: result.title,
+          content,
+          hospitalName,
+          departments,
+          doctors,
+          collectedAt: new Date().toISOString(),
+          jobId,
+        });
+
+        if (metadata) {
+          progress.completed++;
+          items.push(metadata);
+          reportResult(metadata);
+          console.log(`[Worker ${jobId}] Saved: ${result.title.substring(0, 50)}... (${normalizedUrl})`);
+        }
+      }
+      reportProgress();
+    }
+
+    // 发现新链接
+    if (currentDepth < depth) {
+      const $ = cheerio.load(result.html);
+      const newLinks: string[] = [];
+
+      for (const selector of linkSelectors) {
+        $(selector).each((_, el) => {
+          const href = $(el).attr('href');
+          if (href) {
+            try {
+              const absoluteUrl = new URL(href, baseUrl).toString();
+              const normalized = normalizeUrl(absoluteUrl);
+              
+              // 过滤条件
+              if (absoluteUrl.startsWith(baseUrl) &&
+                  !crawledUrls.has(normalized) &&
+                  !discoveredUrls.has(normalized) &&
+                  !urlQueue.some(item => normalizeUrl(item.url) === normalized) &&
+                  !normalized.match(/\.(pdf|doc|docx|xls|xlsx|zip|rar|jpg|png|gif)$/i)) {
+                newLinks.push(absoluteUrl);
+                discoveredUrls.add(normalized);
+              }
+            } catch {
+              // ignore
+            }
+          }
+        });
+      }
+
+      const linksToAdd = newLinks.slice(0, maxLinksPerPage);
+      for (const link of linksToAdd) {
+        urlQueue.push({ url: link, depth: currentDepth + 1 });
+      }
+
+      console.log(`[Worker ${jobId}] Discovered ${newLinks.length} links, added ${linksToAdd.length}`);
+    }
+
+    await randomDelay(2000, 5000);
+  }
+
+  console.log(`[Worker ${jobId}] Hospital completed: ${items.length} items, crawled ${crawledUrls.size} URLs`);
+  reportSourceComplete('hospital_official' as CollectionSourceType, items);
+}
+
+/**
+ * 百度搜索（分页）
+ */
+async function collectBaiduSearch(days: number): Promise<void> {
+  sourceStartTime = Date.now();
+  const items: RawSourceMetadata[] = [];
+
+  const queries = buildSearchQueries();
+  const maxResults = config.maxResults || 100;
+  const maxPagesPerQuery = 3;
+
+  console.log(`[Worker ${jobId}] Baidu: ${queries.length} queries, max: ${maxResults}`);
+
+  for (const query of queries) {
+    if (progress.completed >= maxResults) break;
+
+    for (let page = 0; page < maxPagesPerQuery; page++) {
+      if (progress.completed >= maxResults) break;
+
+      const start = page * 10;
+      const encodedQuery = encodeURIComponent(query);
+      const searchUrl = page === 0
+        ? `https://www.baidu.com/s?wd=${encodedQuery}&tn=news&rtt=4&bsst=1&cl=2`
+        : `https://www.baidu.com/s?wd=${encodedQuery}&pn=${start}&tn=news&rtt=4&bsst=1&cl=2`;
+
+      console.log(`[Worker ${jobId}] Baidu [${query}] page ${page + 1}`);
+
+      const result = await fetchWithRetry(searchUrl, true, 45000);
+      if (!result) {
+        progress.failed++;
+        continue;
+      }
+
+      const $ = cheerio.load(result.html);
+      const newsItems: Array<{ title: string; url: string }> = [];
+
+      $('.result, [tpl], .c-container').each((_, el) => {
+        const titleEl = $(el).find('h3 a, .t a');
+        const title = titleEl.text().trim();
+        const url = titleEl.attr('href') || '';
+        if (title && url) {
+          newsItems.push({ title, url });
+        }
+      });
+
+      console.log(`[Worker ${jobId}] Baidu page ${page + 1}: ${newsItems.length} items`);
+
+      if (newsItems.length === 0) break;
+
+      for (const item of newsItems) {
+        if (progress.completed >= maxResults) break;
+
+        const dupCheck = rawSourceManager.checkDuplicate(item.url, item.title);
+        if (dupCheck.isDuplicate) {
+          progress.duplicates++;
+          continue;
+        }
+
+        const detailResult = await fetchWithRetry(item.url, false, 30000);
+        if (!detailResult) {
+          progress.failed++;
+          continue;
+        }
+
+        const content = extractMainContent(detailResult.html, item.url);
+        
+        const metadata = rawSourceManager.saveRawSource({
+          sourceType: 'baidu_search' as CollectionSourceType,
+          url: item.url,
+          title: item.title,
+          content,
+          hospitalName: config.hospitalName,
+          departments: getRelatedDepartments(),
+          doctors: getRelatedDoctors(),
+          jobId,
+        });
+
+        if (metadata) {
+          progress.completed++;
+          items.push(metadata);
+          reportResult(metadata);
+        }
+
+        reportProgress();
+        await randomDelay(2000, 4000);
+      }
+
+      await randomDelay(3000, 6000);
+    }
+
+    await randomDelay(5000, 8000);
+  }
+
+  console.log(`[Worker ${jobId}] Baidu completed: ${items.length} items`);
+  reportSourceComplete('baidu_search' as CollectionSourceType, items);
+}
+
+/**
+ * 搜狗微信搜索（强化反爬版）
+ */
+async function collectWechatSearch(days: number): Promise<void> {
+  sourceStartTime = Date.now();
+  const items: RawSourceMetadata[] = [];
+
+  const queries = buildSearchQueries().slice(0, 4); // 限制关键词数量避免被封
+  const maxResults = config.maxResults || 30;
+  const maxPagesPerQuery = 2;
+
+  console.log(`[Worker ${jobId}] WeChat: ${queries.length} queries, max: ${maxResults}`);
+
+  for (const query of queries) {
+    if (progress.completed >= maxResults) break;
+
+    console.log(`[Worker ${jobId}] WeChat searching: ${query}`);
+
+    for (let page = 1; page <= maxPagesPerQuery; page++) {
+      if (progress.completed >= maxResults) break;
+
+      const encodedQuery = encodeURIComponent(query);
+      const searchUrl = `https://weixin.sogou.com/weixin?type=2&query=${encodedQuery}&page=${page}`;
+
+      console.log(`[Worker ${jobId}] WeChat page ${page}: ${searchUrl}`);
+
+      // 使用超长超时和验证码处理
+      const result = await fetchWithPlaywright(searchUrl, { 
+        timeout: 90000, 
+        waitForSelector: '.news-list li, .txt-box',
+        solveCaptcha: true 
+      });
+
+      if (!result) {
+        console.log(`[Worker ${jobId}] WeChat search failed for page ${page}`);
+        progress.failed++;
+        await randomDelay(15000, 20000); // 失败后更长延迟
+        continue;
+      }
+
+      const $ = cheerio.load(result.html);
+      const newsItems: Array<{ title: string; url: string; summary: string; account: string }> = [];
+
+      // 搜狗微信搜索结果解析
+      $('.news-list li').each((_, el) => {
+        const titleEl = $(el).find('h3 a');
+        const summaryEl = $(el).find('p');
+        const accountEl = $(el).find('.account');
+
+        let title = titleEl.text().trim();
+        let url = titleEl.attr('href') || '';
+        const summary = summaryEl.text().trim();
+        const account = accountEl.text().trim();
+
+        // 处理搜狗跳转链接
+        if (url && url.startsWith('/link?')) {
+          url = `https://weixin.sogou.com${url}`;
+        }
+
+        if (title && url) {
+          newsItems.push({ title, url, summary, account });
+        }
+      });
+
+      console.log(`[Worker ${jobId}] WeChat page ${page}: found ${newsItems.length} items`);
+
+      if (newsItems.length === 0) {
+        // 检查是否被封
+        if (result.html.includes('验证') || result.html.includes('captcha')) {
+          console.log(`[Worker ${jobId}] WeChat blocked by captcha, stopping...`);
+          break;
+        }
+        continue;
+      }
+
+      // 处理每个结果（限制每页数量）
+      for (const item of newsItems.slice(0, 5)) {
+        if (progress.completed >= maxResults) break;
+
+        console.log(`[Worker ${jobId}] Processing WeChat article: ${item.title.substring(0, 40)}...`);
+
+        // 解析搜狗跳转链接获取真实微信文章URL
+        const realUrl = await resolveSogouLink(item.url);
+        if (!realUrl) continue;
+
+        const dupCheck = rawSourceManager.checkDuplicate(realUrl, item.title);
+        if (dupCheck.isDuplicate) {
+          progress.duplicates++;
+          continue;
+        }
+
+        // 获取微信文章内容（超长超时）
+        const detailResult = await fetchWithPlaywright(realUrl, { timeout: 60000 });
+        if (!detailResult) {
+          progress.failed++;
+          continue;
+        }
+
+        // 微信文章特定选择器
+        const $article = cheerio.load(detailResult.html);
+        let content = '';
+        
+        // 尝试多个微信内容选择器
+        const wxSelectors = ['#js_content', '.rich_media_content', 'article', '.content'];
+        for (const selector of wxSelectors) {
+          const el = $article(selector).first();
+          if (el.length && el.text().trim().length > 50) {
+            content = el.text().trim();
+            break;
+          }
+        }
+        
+        if (!content) {
+          content = extractMainContent(detailResult.html, realUrl);
+        }
+
+        const metadata = rawSourceManager.saveRawSource({
+          sourceType: 'wechat_search' as CollectionSourceType,
+          url: realUrl,
+          title: item.title,
+          content: `[公众号: ${item.account}]\n${item.summary}\n\n${content}`,
+          hospitalName: config.hospitalName,
+          departments: getRelatedDepartments(),
+          doctors: getRelatedDoctors(),
+          jobId,
+        });
+
+        if (metadata) {
+          progress.completed++;
+          items.push(metadata);
+          reportResult(metadata);
+          console.log(`[Worker ${jobId}] WeChat saved: ${item.title.substring(0, 40)}...`);
+        }
+
+        reportProgress();
+
+        // 微信文章间超长延迟
+        await randomDelay(8000, 15000);
+      }
+
+      // 翻页超长延迟
+      await randomDelay(10000, 20000);
+    }
+
+    // 关键词间超长延迟
+    await randomDelay(15000, 25000);
+  }
+
+  console.log(`[Worker ${jobId}] WeChat completed: ${items.length} items`);
+  reportSourceComplete('wechat_search' as CollectionSourceType, items);
+}
+
+/**
+ * 主采集逻辑
+ */
+async function runCollection(): Promise<void> {
+  const { hospitalName, targetType, sourceTypes, isBootstrap, days } = config;
+
+  console.log(`[Worker ${jobId}] Starting: ${hospitalName}, types: ${sourceTypes?.join(', ')}`);
+
+  try {
+    if (sourceTypes) {
+      for (const sourceType of sourceTypes) {
+        if (isCompleted || progress.completed >= (config.maxResults || 100)) break;
+
+        console.log(`[Worker ${jobId}] Processing: ${sourceType}`);
+
+        switch (sourceType) {
+          case 'hospital_official':
+            if (!targetType || targetType === CollectionTargetType.HOSPITAL) {
+              await collectHospitalOfficial(hospitalName, config.depth || 3);
+            }
+            break;
+
+          case 'baidu_search':
+            await collectBaiduSearch(days || 7);
+            break;
+
+          case 'wechat_search':
+            await collectWechatSearch(days || 7);
+            break;
+
+          case 'gov_official':
+          case 'news_media':
+            console.log(`[Worker ${jobId}] ${sourceType} skipped`);
+            break;
+        }
+      }
+    }
+
+    reportComplete();
+    console.log(`[Worker ${jobId}] Completed: ${progress.completed} items`);
+
+  } catch (error) {
+    console.error(`[Worker ${jobId}] Error:`, error);
+    if (!isCompleted) {
+      parentPort?.postMessage({
+        type: 'error',
+        data: { source: 'worker', message: (error as Error).message, retryCount: 0, timestamp: new Date().toISOString() },
+      });
+    }
+    process.exit(1);
+  }
+}
+
+// 启动
+runCollection();

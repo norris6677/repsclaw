@@ -45,3 +45,8 @@ data/
 
 # Old storage directory (legacy)
 storage/
+
+# Test files (exclude from GitHub sync)
+tests/
+*.test.ts
+*.spec.ts

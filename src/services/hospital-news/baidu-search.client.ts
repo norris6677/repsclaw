@@ -5,7 +5,7 @@ import {
   NewsSearchParams,
   HospitalNewsItem,
 } from '../../types/hospital-news.types';
-import { SubscriptionDatabase } from '../subscription-db.service';
+import type { ISubscriptionDatabase } from '../subscription-db.interface';
 import { createLogger } from '../../utils/plugin-logger';
 
 const logger = createLogger('REPSCLAW:BAIDU-SEARCH');
@@ -23,10 +23,10 @@ export class BaiduSearchClient extends NewsSourceClient {
   sourceType = NewsSourceType.BAIDU_SEARCH;
   priority = 4;
 
-  private db: SubscriptionDatabase;
+  private db: ISubscriptionDatabase;
   private readonly CACHE_TTL = 6 * 60 * 60 * 1000; // 6小时
 
-  constructor(db: SubscriptionDatabase) {
+  constructor(db: ISubscriptionDatabase) {
     super();
     this.db = db;
   }
@@ -66,7 +66,7 @@ export class BaiduSearchClient extends NewsSourceClient {
     searchQuery += ' 医院新闻';
 
     try {
-      const results = await this.performSearch(searchQuery, allNames, days, maxResults);
+      const results = await this.performSearch(searchQuery, allNames, days, maxResults, departments, doctors, keywords);
 
       // 3. 缓存结果（使用包含科室和医生信息的cacheKey）
       if (results.length > 0) {
@@ -89,7 +89,10 @@ export class BaiduSearchClient extends NewsSourceClient {
     query: string,
     hospitalNames: string[],
     days: number,
-    maxResults: number
+    maxResults: number,
+    departments?: string[],
+    doctors?: string[],
+    keywords?: string
   ): Promise<HospitalNewsItem[]> {
     const browser = await chromium.launch({
       headless: true,
@@ -118,107 +121,124 @@ export class BaiduSearchClient extends NewsSourceClient {
       // 拦截图片/CSS/字体，加速加载
       await page.route('**/*.{png,jpg,jpeg,gif,css,woff,woff2,ttf}', route => route.abort());
 
-      // 构建百度新闻搜索URL
       const encodedQuery = encodeURIComponent(query);
-      const searchUrl = `https://www.baidu.com/s?wd=${encodedQuery}&tn=news`;
+      const maxPages = 3;
+      const targetResults = maxResults || 20;
 
-      // 访问页面
-      await page.goto(searchUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000,
-      });
+      for (let pageNum = 0; pageNum < maxPages; pageNum++) {
+        if (results.length >= targetResults) break;
 
-      // 随机延迟 2-5秒，模拟人工
-      await page.waitForTimeout(2000 + Math.random() * 3000);
+        const start = pageNum * 10;
+        const searchUrl = pageNum === 0
+          ? `https://www.baidu.com/s?wd=${encodedQuery}&tn=news&rtt=4&bsst=1&cl=2`
+          : `https://www.baidu.com/s?wd=${encodedQuery}&pn=${start}&tn=news&rtt=4&bsst=1&cl=2`;
 
-      // 检测是否触发反爬
-      if (await this.detectBlocking(page)) {
-        throw new Error('BLOCKING_DETECTED');
-      }
-
-      // 提取搜索结果
-      const searchResults = await page.evaluate(() => {
-        const items: Array<{
-          title: string;
-          url: string;
-          summary: string;
-          source: string;
-          dateText: string;
-        }> = [];
-
-        // 百度新闻结果选择器（多种可能）
-        const selectors = [
-          '.result',
-          '[tpl]',
-          '.c-container',
-        ];
-
-        for (const selector of selectors) {
-          document.querySelectorAll(selector).forEach(el => {
-            const titleEl = el.querySelector('h3 a, .t a, a[data-click]');
-            const summaryEl = el.querySelector('.content-right_8Zs40, .c-color-text, .content-right');
-            const sourceEl = el.querySelector('.c-color-gray, .g, .cite');
-            const dateEl = el.querySelector('.c-color-gray2, .c-gap-right, .s-p');
-
-            if (titleEl) {
-              items.push({
-                title: titleEl.textContent?.trim() || '',
-                url: (titleEl as HTMLAnchorElement).href || '',
-                summary: summaryEl?.textContent?.trim() || '',
-                source: sourceEl?.textContent?.trim().split(' ')[0] || '百度',
-                dateText: dateEl?.textContent?.trim() || '',
-              });
-            }
-          });
-
-          if (items.length >= 5) break;
-        }
-
-        return items;
-      });
-
-      // 处理和过滤结果
-      for (const item of searchResults.slice(0, 5)) {
-        if (!item.title) continue;
-
-        // 检查是否包含医院名称
-        const containsHospital = hospitalNames.some(name =>
-          item.title.includes(name) || item.title.includes(name.replace('医院', ''))
-        );
-
-        // 检查是否为医疗相关
-        const isMedicalNews = this.isMedicalNews(item.title, item.summary);
-
-        // 如果既不包含医院名也不是医疗新闻，跳过
-        if (!containsHospital && !isMedicalNews) continue;
-
-        // 解析日期
-        const publishedAt = this.parseDate(item.dateText);
-        if (publishedAt < cutoffDate) continue;
-
-        // 计算相关性分数
-        const relevanceScore = containsHospital ? 85 : (isMedicalNews ? 50 : 30);
-
-        results.push({
-          id: this.generateId('baidu', item.title),
-          title: item.title,
-          summary: item.summary || item.title,
-          source: {
-            name: `${item.source}（百度搜索）`,
-            type: NewsSourceType.BAIDU_SEARCH,
-            url: 'https://www.baidu.com',
-          },
-          originalUrl: item.url,
-          publishedAt: publishedAt.toISOString(),
-          fetchedAt: new Date().toISOString(),
-          relevanceScore,
-          sentiment: this.analyzeSentiment(item.title, item.summary),
-          categories: this.categorize(item.title),
-          verificationStatus: 'unverified',
-          hospitalMentions: hospitalNames.filter(name => item.title.includes(name)),
+        // 访问页面
+        await page.goto(searchUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 15000,
         });
 
-        if (results.length >= (maxResults || 5)) break;
+        // 随机延迟 2-5秒，模拟人工
+        await page.waitForTimeout(2000 + Math.random() * 3000);
+
+        // 检测是否触发反爬
+        if (await this.detectBlocking(page)) {
+          throw new Error('BLOCKING_DETECTED');
+        }
+
+        // 提取搜索结果
+        const searchResults = await page.evaluate(() => {
+          const items: Array<{
+            title: string;
+            url: string;
+            summary: string;
+            source: string;
+            dateText: string;
+          }> = [];
+
+          // 百度新闻结果选择器（多种可能）
+          const selectors = [
+            '.result',
+            '[tpl]',
+            '.c-container',
+          ];
+
+          for (const selector of selectors) {
+            document.querySelectorAll(selector).forEach(el => {
+              const titleEl = el.querySelector('h3 a, .t a, a[data-click]');
+              const summaryEl = el.querySelector('.content-right_8Zs40, .c-color-text, .content-right');
+              const sourceEl = el.querySelector('.c-color-gray, .g, .cite');
+              const dateEl = el.querySelector('.c-color-gray2, .c-gap-right, .s-p');
+
+              if (titleEl) {
+                items.push({
+                  title: titleEl.textContent?.trim() || '',
+                  url: (titleEl as HTMLAnchorElement).href || '',
+                  summary: summaryEl?.textContent?.trim() || '',
+                  source: sourceEl?.textContent?.trim().split(' ')[0] || '百度',
+                  dateText: dateEl?.textContent?.trim() || '',
+                });
+              }
+            });
+          }
+
+          return items;
+        });
+
+        // 处理和过滤结果
+        for (const item of searchResults.slice(0, targetResults)) {
+          if (!item.title) continue;
+
+          // 检查是否包含医院名称
+          const containsHospital = hospitalNames.some(name =>
+            item.title.includes(name) || item.title.includes(name.replace('医院', ''))
+          );
+
+          // 检查是否为医疗相关
+          const isMedicalNews = this.isMedicalNews(item.title, item.summary);
+
+          // 检查是否匹配搜索关键词（科室/医生/关键词）
+          const matchesTerms = this.matchesSearchTerms(item.title, item.summary, departments, doctors, keywords);
+
+          // 如果既不包含医院名，也不是医疗新闻，也不匹配搜索关键词，跳过
+          if (!containsHospital && !isMedicalNews && !matchesTerms) continue;
+
+          // 解析日期
+          const publishedAt = this.parseDate(item.dateText);
+          if (publishedAt < cutoffDate) continue;
+
+          // 计算相关性分数
+          let relevanceScore = 30;
+          if (containsHospital) relevanceScore = 85;
+          else if (matchesTerms) relevanceScore = 65;
+          else if (isMedicalNews) relevanceScore = 50;
+
+          results.push({
+            id: this.generateId('baidu', item.title),
+            title: item.title,
+            summary: item.summary || item.title,
+            source: {
+              name: `${item.source}（百度搜索）`,
+              type: NewsSourceType.BAIDU_SEARCH,
+              url: 'https://www.baidu.com',
+            },
+            originalUrl: item.url,
+            publishedAt: publishedAt.toISOString(),
+            fetchedAt: new Date().toISOString(),
+            relevanceScore,
+            sentiment: this.analyzeSentiment(item.title, item.summary),
+            categories: this.categorize(item.title),
+            verificationStatus: 'unverified',
+            hospitalMentions: hospitalNames.filter(name => item.title.includes(name)),
+          });
+
+          if (results.length >= targetResults) break;
+        }
+
+        if (pageNum < maxPages - 1) {
+          await page.waitForTimeout(3000 + Math.random() * 2000);
+        }
       }
     } finally {
       await browser.close();
@@ -269,9 +289,34 @@ export class BaiduSearchClient extends NewsSourceClient {
       '医院', '医疗', '医生', '患者', '疾病', '治疗', '手术',
       '药物', '疫苗', '医保', '医药', '临床', '科室',
       '专家', '院士', '主任医师', '医疗器械', '健康',
+      '门诊', '住院', '护理', '诊断', '医学', '病症',
+      '血液', '肿瘤', '心脏', '神经', '骨科', '儿科',
+      '妇产', '眼科', '耳鼻喉', '口腔', '皮肤', '精神',
+      '康复', '急诊', '传染', '结核', '肝炎', '癌症',
+      '移植', '透析', '放疗', '化疗', '靶向', '免疫',
     ];
     const text = `${title} ${summary || ''}`.toLowerCase();
     return medicalKeywords.some(kw => text.includes(kw));
+  }
+
+  /**
+   * 检查是否匹配搜索关键词（科室、医生、用户关键词）
+   */
+  private matchesSearchTerms(
+    title: string,
+    summary: string | undefined,
+    departments?: string[],
+    doctors?: string[],
+    keywords?: string
+  ): boolean {
+    const text = (title + ' ' + (summary || '')).toLowerCase();
+    const terms = [
+      ...(departments || []),
+      ...(doctors || []),
+      ...(keywords ? [keywords] : []),
+    ];
+    if (terms.length === 0) return false;
+    return terms.some(term => text.includes(term.toLowerCase()));
   }
 
   /**

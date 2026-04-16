@@ -4,16 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Directory
 
-**All development must be done in `/home/tony203/repsclaw/`**
-
-❌ Never modify files in `~/.openclaw/extensions/repsclaw/` - this is the runtime plugin directory.
-
-Workflow:
-1. Develop → `/home/tony203/repsclaw/` (modify code)
-2. Test → `/home/tony203/repsclaw/` (run tests)
-3. Build → `npm run build` (in dev directory)
-4. Deploy → `./deploy.sh` (syncs to plugin directory)
-
 ## Common Commands
 
 ```bash

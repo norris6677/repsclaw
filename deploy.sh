@@ -45,6 +45,7 @@ SYNC_ITEMS=(
     "openclaw.plugin.json"
     "src"
     "scripts"
+    "dist"
 )
 
 # ========== 工具函数 ==========
@@ -512,6 +513,15 @@ deploy_local() {
         exit 1
     fi
 
+    # 构建项目
+    log_info "🔧 构建项目..."
+    cd "$DEV_DIR"
+    if ! npm run build; then
+        log_error "❌ 构建失败，中断部署"
+        exit 1
+    fi
+    log_success "✅ 构建完成"
+
     # 确保插件目录存在
     mkdir -p "$LOCAL_PLUGIN_DIR"
 
@@ -523,33 +533,58 @@ deploy_local() {
         dst="$LOCAL_PLUGIN_DIR/$item"
 
         if [ -e "$src" ]; then
-            # 删除旧文件/目录
-            if [ -e "$dst" ]; then
-                rm -rf "$dst"
+            if command -v rsync &>/dev/null; then
+                if [ -d "$src" ]; then
+                    mkdir -p "$dst"
+                    rsync -a --delete "$src/" "$dst/"
+                else
+                    rsync -a --delete "$src" "$dst"
+                fi
+            else
+                # 删除旧文件/目录
+                if [ -e "$dst" ]; then
+                    rm -rf "$dst"
+                fi
+                cp -r "$src" "$dst"
             fi
-
-            # 复制新文件/目录
-            cp -r "$src" "$dst"
             log_success "  ✓ $item"
         else
-            log_error "  ✗ $item (不存在)"
+            log_warn "  ⚠ $item (不存在，已跳过)"
         fi
     done
 
     # 同步测试目录（可选）
     if [ -d "$DEV_DIR/tests" ]; then
-        cp -r "$DEV_DIR/tests" "$LOCAL_PLUGIN_DIR/"
+        if command -v rsync &>/dev/null; then
+            mkdir -p "$LOCAL_PLUGIN_DIR/tests"
+            rsync -a --delete "$DEV_DIR/tests/" "$LOCAL_PLUGIN_DIR/tests/"
+        else
+            rm -rf "$LOCAL_PLUGIN_DIR/tests"
+            cp -r "$DEV_DIR/tests" "$LOCAL_PLUGIN_DIR/"
+        fi
         log_success "  ✓ tests"
+    fi
+
+    # 同步依赖
+    if [ -d "$DEV_DIR/node_modules" ]; then
+        log_info "🔄 同步 node_modules..."
+        if command -v rsync &>/dev/null; then
+            mkdir -p "$LOCAL_PLUGIN_DIR"
+            rsync -a --delete "$DEV_DIR/node_modules/" "$LOCAL_PLUGIN_DIR/node_modules/"
+        else
+            rm -rf "$LOCAL_PLUGIN_DIR/node_modules"
+            cp -r "$DEV_DIR/node_modules" "$LOCAL_PLUGIN_DIR/"
+        fi
+        log_success "✅ 依赖同步完成"
+    else
+        log_info "📦 安装依赖..."
+        cd "$LOCAL_PLUGIN_DIR"
+        npm install --silent 2>&1 | grep -v "npm WARN" || true
+        log_success "✅ 依赖安装完成"
     fi
 
     # 更新 OpenClaw 配置
     update_local_openclaw_config "$LOCAL_PLUGIN_DIR"
-
-    # 安装依赖
-    log_info "📦 安装依赖..."
-    cd "$LOCAL_PLUGIN_DIR"
-    npm install --silent 2>&1 | grep -v "npm WARN" || true
-    log_success "✅ 依赖安装完成"
 
     # 验证部署
     verify_deployment "$LOCAL_PLUGIN_DIR"
@@ -696,6 +731,13 @@ verify_deployment() {
     else
         log_error "❌ 部署验证失败"
         exit 1
+    fi
+
+    # 验证构建产物
+    if [ ! -f "$plugin_dir/dist/index.js" ]; then
+        log_warn "⚠️  dist/index.js 不存在，部分功能可能不可用"
+    else
+        log_success "  ✓ dist/index.js"
     fi
 
     # 显示文件数量

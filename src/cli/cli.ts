@@ -88,9 +88,14 @@ ${Object.entries(getCommandHelp())
 Examples:
   repsclaw hospital subscribe "北京协和医院" --primary
   repsclaw hospital list
+  repsclaw doctor subscribe "张医生" --hospital="协和医院" --primary
+  repsclaw doctor list
   repsclaw query pubmed --term="diabetes treatment"
   repsclaw query fda --drug="Aspirin"
   repsclaw news --hospital="协和医院"
+  repsclaw collection bootstrap --hospital="协和医院"
+  repsclaw collection list --active
+  repsclaw progress stream <job-id>
 
 Help:
   repsclaw <module> --help    显示模块帮助

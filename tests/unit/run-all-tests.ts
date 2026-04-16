@@ -13,7 +13,9 @@ interface TestFile {
 }
 
 const testFiles: TestFile[] = [
+  // Utils Tests
   { name: '限流器', path: 'rate-limiter.test.ts' },
+  { name: 'Circuit Breaker', path: 'utils/circuit-breaker.test.ts' },
   // API Client Tests
   { name: 'PubMed Client', path: 'api/pubmed.client.test.ts' },
   { name: 'FDA Client', path: 'api/fda.client.test.ts' },
@@ -30,13 +32,16 @@ const testFiles: TestFile[] = [
   { name: 'MedRxiv Tool', path: 'tools/medrxiv.tool.test.ts' },
   { name: 'NCBI Bookshelf Tool', path: 'tools/nci-bookshelf.tool.test.ts' },
   { name: 'Hospital Subscription Tool', path: 'tools/hospital-subscription.tool.test.ts' },
+  { name: 'Doctor Subscription Tool', path: 'tools/doctor-subscription.tool.test.ts' },
   { name: 'Hospital News Tool', path: 'tools/hospital-news.tool.test.ts' },
+  // Service Tests
+  { name: 'Web-to-Markdown Service', path: 'services/web-to-markdown.service.test.ts' },
 ];
 
 async function runTest(file: TestFile): Promise<TestResult> {
   return new Promise((resolve) => {
     const testPath = path.join(__dirname, file.path);
-    const child = spawn('npx', ['tsx', testPath], {
+    const child = spawn(`npx tsx "${testPath}"`, {
       stdio: 'pipe',
       shell: true,
     });

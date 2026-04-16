@@ -1,4 +1,5 @@
 import { CircuitBreaker } from '../utils/circuit-breaker';
+import * as crypto from 'crypto';
 
 /**
  * 医院全网消息查询 - 类型定义
@@ -178,7 +179,7 @@ export abstract class NewsSourceClient {
   }
 
   protected generateId(source: string, title: string): string {
-    const hash = Buffer.from(source + title).toString('base64').slice(0, 16);
+    const hash = crypto.createHash('sha256').update(source + title).digest('hex').slice(0, 16);
     return `${source}_${hash}`;
   }
 }

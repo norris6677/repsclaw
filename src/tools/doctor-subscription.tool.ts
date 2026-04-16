@@ -33,7 +33,7 @@ export function createSubscribeDoctorHandler(doctorSubscriptionService: DoctorSu
     try {
       const params = SubscribeDoctorParametersSchema.parse(args);
 
-      const result = doctorSubscriptionService.subscribe(
+      const result = await doctorSubscriptionService.subscribe(
         params.hospitalName,
         params.doctorName,
         params.department,
@@ -70,6 +70,7 @@ export function createSubscribeDoctorHandler(doctorSubscriptionService: DoctorSu
             doctors,
             primary: stats.primary,
             isExisting: true,
+            collection: result.collection,
           },
           meta: { timestamp: new Date().toISOString() },
         };
@@ -77,15 +78,25 @@ export function createSubscribeDoctorHandler(doctorSubscriptionService: DoctorSu
 
       const isPrimary = doctors.length === 1 ? true : params.isPrimary;
 
+      // 构建消息，包含采集进度信息
+      let message = isPrimary
+        ? `✅ 已订阅 ${result.subscription!.name}（${result.subscription!.hospital}）- 主要医生`
+        : `✅ 已订阅 ${result.subscription!.name}（${result.subscription!.hospital}）`;
+
+      if (result.collection) {
+        message += `\n\n🔍 正在后台采集医生信息...`;
+        message += `\n   预计用时：${result.collection.estimatedTime}`;
+        message += `\n   进度追踪：${result.collection.streamUrl}`;
+      }
+
       return {
         status: 'success',
-        message: isPrimary
-          ? `✅ 已订阅 ${result.subscription!.name}（${result.subscription!.hospital}）- 主要医生`
-          : `✅ 已订阅 ${result.subscription!.name}（${result.subscription!.hospital}）`,
+        message,
         data: {
           subscription: result.subscription,
           doctors,
           primary: stats.primary,
+          collection: result.collection,
         },
         meta: { timestamp: new Date().toISOString() },
       };

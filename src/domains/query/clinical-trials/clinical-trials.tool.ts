@@ -197,5 +197,3 @@ export function createClinicalTrialsHandler(): ToolDefinition['handler'] {
     }
   };
 }
-
-import { z } from 'zod';

@@ -232,8 +232,8 @@ export class CrawleeCrawlerService extends EventEmitter {
             }
           }
 
-          // 清理内容
-          content = content.replace(/\s+/g, ' ').slice(0, 10000);
+          // 清理内容（保留全文，不再截断）
+          content = content.replace(/\s+/g, ' ');
 
           // 提取链接
           const links: string[] = [];

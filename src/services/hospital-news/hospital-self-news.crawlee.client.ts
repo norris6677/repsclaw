@@ -2,7 +2,6 @@ import {
   CheerioCrawler,
   RequestQueue,
   CheerioCrawlingContext,
-  Configuration,
 } from 'crawlee';
 import { HeaderGenerator } from 'header-generator';
 import {
@@ -13,13 +12,13 @@ import {
 } from '../../types/hospital-news.types';
 import { createLogger } from '../../utils/plugin-logger';
 import { CRAWLEE_STORAGE_DIR, ensureDataDirectories } from '../../config/data-paths.config';
+import { SearchEngineUrlDiscovery } from './search-engine-discovery';
+import type { LLMClient } from '../llm-client';
 
 const logger = createLogger('REPSCLAW:HOSPITAL-NEWS');
 
 // 配置 Crawlee 使用统一的数据目录
-const crawleeConfig = new Configuration({
-  storageDir: CRAWLEE_STORAGE_DIR,
-});
+process.env.CRAWLEE_STORAGE_DIR = CRAWLEE_STORAGE_DIR;
 
 // 创建 header 生成器实例
 const headerGenerator = new HeaderGenerator({
@@ -40,11 +39,17 @@ const headerGenerator = new HeaderGenerator({
 export class HospitalSelfNewsClient extends NewsSourceClient {
   sourceType = NewsSourceType.HOSPITAL_SELF;
   priority = 1;
+  private urlDiscovery: SearchEngineUrlDiscovery;
+
+  constructor(urlDiscovery?: SearchEngineUrlDiscovery, llmClient?: LLMClient) {
+    super();
+    this.urlDiscovery = urlDiscovery || new SearchEngineUrlDiscovery(llmClient);
+  }
 
   // Top 100 医院官网映射表
   // 注意：部分医院使用CDN/WAF，URL可能变动，需要定期验证
   private hospitalUrlMap: Map<string, string | null> = new Map([
-    ['北京协和医院', null], // 官网使用动态加载/WAF，需特殊处理
+    ['北京协和医院', 'https://www.pumch.cn/news.html'], // 官网使用动态加载/WAF，需特殊处理
     ['四川大学华西医院', 'https://www.wchscu.cn/Home/NewsList'],
     ['复旦大学附属中山医院', 'https://www.zs-hospital.sh.cn/news/'],
     ['上海交通大学医学院附属瑞金医院', 'https://www.rjh.com.cn/xwzx/yydt/'],
@@ -100,7 +105,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
     const { hospitalName, aliases, days, maxResults } = params;
 
     // 1. 获取医院官网URL
-    const newsUrl = this.getHospitalNewsUrl(hospitalName);
+    const newsUrl = await this.getHospitalNewsUrl(hospitalName);
     if (!newsUrl) {
       logger.warn(`[HospitalSelfNewsClient] 未找到医院 URL: ${hospitalName}`);
       return [];
@@ -134,6 +139,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
     maxResults: number
   ): Promise<HospitalNewsItem[]> {
     const newsItems: HospitalNewsItem[] = [];
+    const pendingItems = new Map<string, Partial<HospitalNewsItem>>();
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
     const allNames = [hospitalName, ...aliases];
@@ -143,15 +149,14 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
 
     // 创建请求队列
     const requestQueue = await RequestQueue.open(`hospital-news-${Date.now()}`);
-    await requestQueue.addRequest({ url: newsUrl });
+    await requestQueue.addRequest({ url: newsUrl, label: 'list' });
 
     // 配置 Crawlee 爬虫
     const crawler = new CheerioCrawler({
       requestQueue,
-      configuration: crawleeConfig,
 
-      // 限制
-      maxRequestsPerCrawl: 1, // 只爬取入口页
+      // 限制：列表页 + 详情页（提升上限以支持更大批量采集）
+      maxRequestsPerCrawl: Math.min((maxResults || 10) * 3 + 1, 151),
 
       // 会话和反爬配置
       useSessionPool: true,
@@ -163,7 +168,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
       },
 
       // 错误处理
-      maxRequestRetries: 3,
+      maxRequestRetries: 2,
       retryOnBlocked: true,
 
       // 预处理请求 - 使用 header-generator
@@ -181,7 +186,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
 
       // 请求处理器
       requestHandler: async ({ request, $, response }: CheerioCrawlingContext) => {
-        logger.debug(`[Crawlee] 处理医院新闻页: ${request.url}`);
+        logger.debug(`[Crawlee] 处理医院新闻页: ${request.url} [${request.label}]`);
 
         if (response.statusCode !== 200) {
           logger.warn(`[Crawlee] 页面返回非 200 状态: ${request.url} = ${response.statusCode}`);
@@ -191,7 +196,39 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
         // 移除脚本和样式
         $('script, style, nav, footer').remove();
 
-        // 尝试多种选择器找到新闻列表
+        if (request.label === 'detail') {
+          // 详情页：提取正文全文
+          if (newsItems.length >= maxResults) return;
+
+          const pending = pendingItems.get(request.url);
+          if (!pending) return;
+
+          const contentSelectors = [
+            'article', '.content', '.main-content', '#content', '.detail',
+            '.article-content', '.news-content', '.post-content', '.entry-content',
+            '[class*="content"]', '[class*="detail"]',
+          ];
+          let content = '';
+          for (const sel of contentSelectors) {
+            const text = $(sel).first().text().trim();
+            if (text && text.length > 100) {
+              content = text;
+              break;
+            }
+          }
+          if (!content) {
+            content = $('body').text().trim().replace(/\s+/g, ' ');
+          }
+
+          newsItems.push({
+            ...pending,
+            content,
+            summary: pending.summary || content.slice(0, 200),
+          } as HospitalNewsItem);
+          return;
+        }
+
+        // 列表页：提取新闻条目并加入详情页队列
         const selectors = [
           'ul.news-list li',
           '.news-item',
@@ -206,7 +243,7 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
 
         for (const selector of selectors) {
           $(selector).each((_, element) => {
-            if (newsItems.length >= maxResults) return false;
+            if (pendingItems.size >= (maxResults || 10) * 3) return false;
 
             const titleEl = $(element).find('a, h1, h2, h3, h4, .title').first();
             const title = titleEl.text().trim();
@@ -229,7 +266,6 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
             if (dateText) {
               publishedAt = this.parseDate(dateText);
             } else {
-              // 尝试从链接或文本中提取日期
               publishedAt = this.extractDateFromText(title + ' ' + link) || new Date();
             }
 
@@ -237,17 +273,20 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
             if (publishedAt < cutoffDate) return;
 
             const absoluteUrl = this.resolveUrl(link, newsUrl);
+            if (!absoluteUrl) return;
 
-            newsItems.push({
+            const summary = $(element).find('.summary, .desc, p').first().text().trim().slice(0, 200);
+
+            pendingItems.set(absoluteUrl, {
               id: this.generateId('hospital_self', title),
               title,
-              summary: $(element).find('.summary, .desc, p').first().text().trim().slice(0, 200),
+              summary,
               source: {
                 name: `${hospitalName}官网`,
                 type: NewsSourceType.HOSPITAL_SELF,
                 url: newsUrl,
               },
-              originalUrl: absoluteUrl || newsUrl,
+              originalUrl: absoluteUrl,
               publishedAt: publishedAt.toISOString(),
               fetchedAt: new Date().toISOString(),
               relevanceScore,
@@ -256,9 +295,14 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
               verificationStatus: 'verified',
               hospitalMentions: allNames.filter(name => title.includes(name)),
             });
+
+            // 将详情页加入队列
+            requestQueue.addRequest({ url: absoluteUrl, label: 'detail' }).catch(err => {
+              logger.warn(`[Crawlee] 加入详情页队列失败: ${absoluteUrl}`, err);
+            });
           });
 
-          if (newsItems.length >= maxResults) break;
+          if (pendingItems.size >= (maxResults || 10) * 2) break;
         }
       },
 
@@ -274,25 +318,46 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
     // 清理队列
     await requestQueue.drop();
 
+    // 如果详情页提取失败，把 pending 中没有 content 的也返回（用 summary 兜底）
+    for (const [url, pending] of pendingItems) {
+      if (newsItems.length >= maxResults) break;
+      const alreadyAdded = newsItems.some(item => item.originalUrl === url);
+      if (!alreadyAdded) {
+        newsItems.push({
+          ...pending,
+          summary: pending.summary || pending.title,
+        } as HospitalNewsItem);
+      }
+    }
+
     return newsItems.slice(0, maxResults);
   }
 
-  private getHospitalNewsUrl(hospitalName: string): string | null {
-    // 1. 先查映射表
+  private async getHospitalNewsUrl(hospitalName: string): Promise<string | null> {
+    // 1. 优先通过搜索引擎+LLM动态发现 URL
+    try {
+      const discoveredUrl = await this.urlDiscovery.discoverHospitalNewsUrl(hospitalName);
+      if (discoveredUrl) {
+        return discoveredUrl;
+      }
+    } catch (error) {
+      logger.warn(`[HospitalSelfNewsClient] 搜索引擎发现 URL 失败: ${hospitalName}`, error);
+    }
+
+    // 2. 回退到硬编码映射表
     const mappedUrl = this.hospitalUrlMap.get(hospitalName);
-    if (mappedUrl !== undefined) {
-      // 明确设置为null表示该医院已知但暂不支持爬取（如WAF保护）
+    if (mappedUrl !== undefined && mappedUrl !== null) {
       return mappedUrl;
     }
 
-    // 2. 尝试用别名查找
+    // 3. 尝试用别名查找
     for (const [name, url] of this.hospitalUrlMap) {
       if ((hospitalName.includes(name) || name.includes(hospitalName)) && url !== null) {
         return url;
       }
     }
 
-    // 3. 尝试构造 URL（仅对未明确列出的医院）
+    // 4. 尝试构造 URL（仅对未明确列出的医院）
     const pinyin = this.toPinyin(hospitalName);
     return `https://www.${pinyin}.com/xwzx/`;
   }

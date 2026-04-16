@@ -2,6 +2,14 @@ import { FastifyInstance } from 'fastify';
 import { IOpenClawPlugin, IPluginContext, IPluginMetadata } from './types';
 import { HealthAPIService } from './integrations';
 import { RAGService, ComplianceService, CrawlerService } from './services';
+import { wikiManager } from './services/wiki/wiki-manager.service';
+import { WikiIngestService } from './services/wiki/wiki-ingest.service';
+import { WikiQueryService } from './services/wiki/wiki-query.service';
+import { WikiLintService } from './services/wiki/wiki-lint.service';
+import { createLLMClient } from './services/llm-client';
+import { ensureAgentsMd } from './services/wiki/agents-md-generator';
+import { registerWikiQueryTools } from './domains/query/wiki';
+import type { OpenClawAPI } from './types/openclaw.types';
 
 /**
  * Repsclaw - OpenClaw 健康医疗插件
@@ -43,11 +51,34 @@ export default class RepsclawPlugin implements IOpenClawPlugin {
 
     this.services.set('healthAPI', this.healthAPI);
 
+    // 初始化 Wiki 服务
+    ensureAgentsMd();
+    const llmClient = createLLMClient(context as unknown as import('./types/openclaw.types').OpenClawAPI);
+    const wikiIngest = new WikiIngestService(wikiManager, llmClient);
+    const wikiQuery = new WikiQueryService(wikiManager, llmClient);
+    const wikiLint = new WikiLintService(wikiManager);
+
+    this.services.set('wikiManager', wikiManager);
+    this.services.set('wikiIngest', wikiIngest);
+    this.services.set('wikiQuery', wikiQuery);
+    this.services.set('wikiLint', wikiLint);
+
+    // 注册 Wiki 查询工具
+    registerWikiQueryTools({ wikiQueryService: wikiQuery, wikiLintService: wikiLint, wikiManager });
+
     // 注册服务到 OpenClaw 服务注册表
     this.registerServices(context);
 
     // 注册路由
     this.registerRoutes(server);
+
+    // 注册文章采集功能
+    try {
+      const { registerArticleIngestion } = await import('./article-ingestion-plugin');
+      await registerArticleIngestion(context as unknown as OpenClawAPI, context);
+    } catch (error) {
+      logger.warn('Article ingestion plugin registration failed', { error });
+    }
 
     logger.info('✅ Repsclaw plugin registered successfully');
   }
@@ -66,6 +97,22 @@ export default class RepsclawPlugin implements IOpenClawPlugin {
     if (this.healthAPI) {
       services.register('repsclaw:health', this.healthAPI);
       logger.debug('Health API service registered');
+    }
+
+    // 注册 Wiki 服务
+    const wikiManager = this.services.get('wikiManager');
+    const wikiIngest = this.services.get('wikiIngest');
+    const wikiQuery = this.services.get('wikiQuery');
+    const wikiLint = this.services.get('wikiLint');
+
+    if (wikiManager && wikiIngest && wikiQuery && wikiLint) {
+      services.register('repsclaw:wiki', {
+        wikiManager,
+        wikiIngest,
+        wikiQuery,
+        wikiLint,
+      });
+      logger.debug('Wiki services registered');
     }
 
     // 可以在这里注册其他内部服务

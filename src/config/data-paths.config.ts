@@ -82,10 +82,26 @@ function getBaseDataDir(): string {
 // 基础目录
 export const BASE_DATA_DIR = getBaseDataDir();
 
-// Markdown 数据存储目录
-export const HOSPITALS_DIR = path.join(BASE_DATA_DIR, 'hospitals');
-export const DOCTORS_DIR = path.join(BASE_DATA_DIR, 'doctors');
-export const NEWS_DIR = path.join(BASE_DATA_DIR, 'news');
+// 订阅数据存储目录 (Markdown)
+export const SUBSCRIPTIONS_DIR = path.join(BASE_DATA_DIR, 'subscriptions');
+export const HOSPITALS_DIR = path.join(SUBSCRIPTIONS_DIR, 'hospitals');
+export const DOCTORS_DIR = path.join(SUBSCRIPTIONS_DIR, 'doctors');
+export const NEWS_DIR = path.join(SUBSCRIPTIONS_DIR, 'news');
+
+// Wiki 知识库目录 (LLM Wiki 模式 - Layer 2)
+export const WIKI_DIR = path.join(BASE_DATA_DIR, 'wiki');
+export const WIKI_HOSPITALS_DIR = path.join(WIKI_DIR, 'hospitals');
+export const WIKI_DEPARTMENTS_DIR = path.join(WIKI_DIR, 'departments');
+export const WIKI_DOCTORS_DIR = path.join(WIKI_DIR, 'doctors');
+export const WIKI_INSIGHTS_DIR = path.join(WIKI_DIR, 'insights');
+export const WIKI_RELATIONS_DIR = path.join(WIKI_DIR, 'relations');
+export const WIKI_LINT_REPORTS_DIR = path.join(WIKI_DIR, 'lint-reports');
+
+// 原始资料目录 (Layer 1: Raw Sources - 对应 methodology.md 的 sources/)
+export const SOURCES_DIR = path.join(WIKI_DIR, 'sources');
+
+// 原始资料和其他数据目录
+export const WEB_PAGES_DIR = path.join(BASE_DATA_DIR, 'web-pages');
 
 // 缓存目录
 export const CACHE_DIR = path.join(BASE_DATA_DIR, 'cache');
@@ -106,9 +122,19 @@ export const SOGOU_COOKIE_FILE = path.join(WECHAT_CACHE_DIR, 'sogou-cookie.txt')
 export function ensureDataDirectories(): void {
   const dirs = [
     BASE_DATA_DIR,
+    SUBSCRIPTIONS_DIR,
     HOSPITALS_DIR,
     DOCTORS_DIR,
     NEWS_DIR,
+    WIKI_DIR,
+    WIKI_HOSPITALS_DIR,
+    WIKI_DEPARTMENTS_DIR,
+    WIKI_DOCTORS_DIR,
+    WIKI_INSIGHTS_DIR,
+    WIKI_RELATIONS_DIR,
+    WIKI_LINT_REPORTS_DIR,
+    SOURCES_DIR,
+    WEB_PAGES_DIR,
     CACHE_DIR,
     WECHAT_CACHE_DIR,
     CONTENT_CACHE_DIR,
@@ -129,9 +155,18 @@ export function ensureDataDirectories(): void {
 export function getDataDirInfo(): Record<string, string> {
   return {
     baseDir: BASE_DATA_DIR,
+    subscriptionsDir: SUBSCRIPTIONS_DIR,
     hospitalsDir: HOSPITALS_DIR,
     doctorsDir: DOCTORS_DIR,
     newsDir: NEWS_DIR,
+    wikiDir: WIKI_DIR,
+    wikiHospitalsDir: WIKI_HOSPITALS_DIR,
+    wikiDepartmentsDir: WIKI_DEPARTMENTS_DIR,
+    wikiDoctorsDir: WIKI_DOCTORS_DIR,
+    wikiInsightsDir: WIKI_INSIGHTS_DIR,
+    wikiRelationsDir: WIKI_RELATIONS_DIR,
+    sourcesDir: SOURCES_DIR,
+    webPagesDir: WEB_PAGES_DIR,
     cacheDir: CACHE_DIR,
     wechatCacheDir: WECHAT_CACHE_DIR,
     crawleeStorageDir: CRAWLEE_STORAGE_DIR,

@@ -1,0 +1,23 @@
+{
+  "_comment": "OpenClaw / Repsclaw 配置文件示例",
+  "repsclaw": {
+    "articleIngestion": {
+      "feishu": {
+        "appId": "cli_xxxxxxxxxxxxxxxx",
+        "appSecret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "encryptKey": "",
+        "verificationToken": ""
+      },
+      "session": {
+        "ttl": 300000,
+        "checkpointInterval": 30000,
+        "maxSessions": 1000
+      },
+      "intent": {
+        "autoSaveThreshold": 0.8,
+        "suggestThreshold": 0.5,
+        "llmModel": "claude-sonnet-4-6"
+      }
+    }
+  }
+}

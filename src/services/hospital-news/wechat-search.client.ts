@@ -1,4 +1,5 @@
 import { chromium, Browser, Page } from 'playwright';
+import * as cheerio from 'cheerio';
 import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
@@ -8,7 +9,7 @@ import {
   NewsSearchParams,
   HospitalNewsItem,
 } from '../../types/hospital-news.types';
-import { SubscriptionDatabase } from '../subscription-db.service';
+import type { ISubscriptionDatabase } from '../subscription-db.interface';
 import { createLogger } from '../../utils/plugin-logger';
 import {
   WECHAT_RATE_LIMIT_FILE,
@@ -45,13 +46,13 @@ export class WechatSearchClient extends NewsSourceClient {
   sourceType = NewsSourceType.WECHAT_SEARCH;
   priority = 5;
 
-  private db: SubscriptionDatabase;
+  private db: ISubscriptionDatabase;
   private readonly CACHE_TTL = 6 * 60 * 60 * 1000; // 6小时
   private readonly CONTENT_CACHE_TTL = 24 * 60 * 60 * 1000; // 24小时内容缓存
   private readonly RATE_LIMIT_INTERVAL = 60 * 60 * 1000; // 1小时
   private rateLimitFile: string = WECHAT_RATE_LIMIT_FILE;
 
-  constructor(db: SubscriptionDatabase) {
+  constructor(db: ISubscriptionDatabase) {
     super();
     this.db = db;
 
@@ -65,6 +66,10 @@ export class WechatSearchClient extends NewsSourceClient {
   private sogouCookie: string | null = null;
   private cookieLastUpdated: number = 0;
   private readonly COOKIE_REFRESH_INTERVAL = 30 * 60 * 1000; // 30分钟刷新一次
+
+  // 增强反爬：Playwright Cookie 对象缓存（维持搜狗会话）
+  private wechatCookies: { name: string; value: string; domain: string }[] = [];
+  private preflightDone: boolean = false;
 
   /**
    * 获取有效的搜狗 Cookie
@@ -246,8 +251,16 @@ export class WechatSearchClient extends NewsSourceClient {
       searchQuery += ` ${keywords}`;
     }
 
+    // 4. 预检：先访问搜狗首页建立会话（增强反爬）
+    if (!this.preflightDone) {
+      logger.info('[WechatSearch] 预检：访问搜狗首页建立会话');
+      await this.fetchWechatPage('https://weixin.sogou.com', { timeout: 30000 });
+      this.preflightDone = true;
+      await this.delay(3000, 5000);
+    }
+
     try {
-      let results = await this.performSearch(searchQuery, allNames, days, maxResults);
+      let results = await this.performSearch(searchQuery, allNames, days, maxResults, departments, doctors, keywords);
 
       // 4. 如果需要包含正文内容，提取文章内容
       if (includeContent && results.length > 0) {
@@ -294,92 +307,222 @@ export class WechatSearchClient extends NewsSourceClient {
   }
 
   /**
+   * 创建反检测浏览器（增强版）
+   */
+  private async createStealthBrowser() {
+    return chromium.launch({
+      headless: true,
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--disable-gpu',
+        '--window-size=1920,1080',
+      ],
+    });
+  }
+
+  /**
+   * 微信专用页面获取（增强反爬版）
+   */
+  private async fetchWechatPage(
+    url: string,
+    options: { timeout?: number; isArticle?: boolean } = {}
+  ): Promise<{ html: string; title: string; finalUrl: string } | null> {
+    const timeout = options.timeout || 90000;
+    const browser = await this.createStealthBrowser();
+
+    try {
+      const context = await browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
+        viewport: { width: 1920, height: 1080 },
+        locale: 'zh-CN',
+        timezoneId: 'Asia/Shanghai',
+        permissions: ['geolocation'],
+        geolocation: { latitude: 39.9042, longitude: 116.4074 }, // 北京位置
+      });
+
+      // 设置Cookie
+      if (this.wechatCookies.length > 0) {
+        await context.addCookies(this.wechatCookies);
+      }
+
+      const page = await context.newPage();
+
+      // 执行脚本隐藏自动化痕迹
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+        (window as any).chrome = { runtime: {} };
+      });
+
+      // 拦截图片/CSS/字体，只保留JS和HTML
+      await page.route('**/*.{png,jpg,jpeg,gif,svg,ico,css,woff,woff2,ttf,otf,eot,mp4,mp3}', route => route.abort());
+
+      logger.info(`[WechatSearch] Navigating: ${url.substring(0, 80)}...`);
+
+      const response = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: timeout,
+      });
+
+      // 等待页面加载
+      await page.waitForTimeout(options.isArticle ? 5000 : 3000);
+
+      // 模拟人类行为：随机滚动
+      if (!options.isArticle) {
+        await page.evaluate(() => {
+          window.scrollBy(0, Math.random() * 300 + 100);
+        });
+        await page.waitForTimeout(1000);
+      }
+
+      // 检查验证码
+      const content = await page.content();
+      if (content.includes('验证码') || content.includes('captcha') || content.includes('请输入验证码')) {
+        logger.warn(`[WechatSearch] Captcha detected, trying to wait...`);
+        await page.waitForTimeout(15000);
+      }
+
+      // 检查是否被封
+      if (content.includes('访问过于频繁') || content.includes('您的访问过于频繁')) {
+        logger.warn(`[WechatSearch] Rate limited!`);
+        return null;
+      }
+
+      const html = await page.content();
+      const title = await page.title();
+      const finalUrl = page.url();
+
+      // 保存Cookie
+      this.wechatCookies = await context.cookies();
+
+      return { html, title, finalUrl };
+    } catch (error) {
+      logger.error(`[WechatSearch] Error fetching page:`, error);
+      return null;
+    } finally {
+      await browser.close();
+    }
+  }
+
+  /**
+   * 解析搜狗链接（增强版）
+   */
+  private async resolveSogouLinkEnhanced(sogouUrl: string): Promise<string | null> {
+    try {
+      const result = await this.fetchWechatPage(sogouUrl, { timeout: 45000 });
+      if (!result) return null;
+
+      // 如果已经跳转到微信域名
+      if (result.finalUrl.includes('mp.weixin.qq.com')) {
+        return result.finalUrl;
+      }
+
+      // 解析页面中的跳转链接
+      const $ = cheerio.load(result.html);
+
+      // 尝试从meta refresh提取
+      const metaRefresh = $('meta[http-equiv="refresh"]').attr('content');
+      if (metaRefresh) {
+        const match = metaRefresh.match(/url=['"]?([^'"]+)/i);
+        if (match) return match[1];
+      }
+
+      // 尝试从链接中提取
+      const link = $('a[href*="mp.weixin.qq.com"]').first().attr('href');
+      if (link) return link;
+
+      // 如果页面内容包含微信文章特征，返回原始URL继续处理
+      if (result.html.includes('rich_media') || result.html.includes('js_content')) {
+        return sogouUrl;
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`[WechatSearch] Resolve error:`, error);
+      return null;
+    }
+  }
+
+  /**
    * 执行搜狗微信搜索
    */
   private async performSearch(
     query: string,
     hospitalNames: string[],
     days: number,
-    maxResults: number
+    maxResults: number,
+    departments?: string[],
+    doctors?: string[],
+    keywords?: string
   ): Promise<HospitalNewsItem[]> {
-    const browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-      ],
-    });
-
     const results: HospitalNewsItem[] = [];
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
+    const encodedQuery = encodeURIComponent(query);
+    const maxPages = 3;
+    const targetResults = maxResults || 20;
 
-    try {
-      const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: { width: 1280, height: 720 },
-        locale: 'zh-CN',
-        timezoneId: 'Asia/Shanghai',
-      });
+    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      if (results.length >= targetResults) break;
 
-      const page = await context.newPage();
+      const searchUrl = `https://weixin.sogou.com/weixin?type=2&query=${encodedQuery}&page=${pageNum}`;
 
-      // 拦截图片/CSS/字体
-      await page.route('**/*.{png,jpg,jpeg,gif,css,woff,woff2,ttf}', route => route.abort());
-
-      // 构建搜狗微信搜索URL
-      const encodedQuery = encodeURIComponent(query);
-      const searchUrl = `https://weixin.sogou.com/weixin?type=2&query=${encodedQuery}`;
-
-      // 访问页面
-      await page.goto(searchUrl, {
-        waitUntil: 'networkidle',
-        timeout: 20000,
-      });
-
-      // 等待更久，搜狗加载慢
-      await page.waitForTimeout(3000 + Math.random() * 2000);
-
-      // 检测是否触发反爬
-      if (await this.detectBlocking(page)) {
-        throw new Error('BLOCKING_DETECTED');
+      // 使用增强版获取搜索页面
+      const result = await this.fetchWechatPage(searchUrl, { timeout: 60000 });
+      if (!result) {
+        logger.warn('[WechatSearch] 搜狗微信搜索页面获取失败');
+        continue;
       }
 
-      // 提取搜索结果
-      const searchResults = await page.evaluate(() => {
-        const items: Array<{
-          title: string;
-          url: string;
-          summary: string;
-          source: string;
-          dateText: string;
-        }> = [];
+      // 检测是否被封
+      if (result.html.includes('验证') || result.html.includes('captcha') || result.html.includes('过于频繁')) {
+        logger.warn('[WechatSearch] 触发搜狗反爬，停止搜索');
+        break;
+      }
 
-        // 搜狗微信文章列表选择器
-        document.querySelectorAll('.news-list li, .txt-box').forEach(el => {
-          const titleEl = el.querySelector('h3 a, .tit a');
-          const summaryEl = el.querySelector('p, .txt-info');
-          const sourceEl = el.querySelector('.s-p a, .account');
-          const dateEl = el.querySelector('.s2, .time');
+      const $ = cheerio.load(result.html);
+      const searchItems: Array<{
+        title: string;
+        url: string;
+        summary: string;
+        source: string;
+        dateText: string;
+      }> = [];
 
-          if (titleEl) {
-            items.push({
-              title: titleEl.textContent?.trim() || '',
-              url: (titleEl as HTMLAnchorElement).href || '',
-              summary: summaryEl?.textContent?.trim() || '',
-              source: sourceEl?.textContent?.trim() || '微信公众号',
-              dateText: dateEl?.textContent?.trim() || '',
-            });
-          }
-        });
+      // 搜狗微信搜索结果解析
+      $('.news-list li, .txt-box').each((_, el) => {
+        const titleEl = $(el).find('h3 a, .tit a');
+        const summaryEl = $(el).find('p, .txt-info');
+        const sourceEl = $(el).find('.account, .s-p a');
+        const dateEl = $(el).find('.s2, .time');
 
-        return items;
+        let title = titleEl.text().trim();
+        let url = titleEl.attr('href') || '';
+        const summary = summaryEl.text().trim();
+        const account = sourceEl.text().trim();
+        const dateText = dateEl.text().trim();
+
+        // 处理搜狗跳转链接
+        if (url && url.startsWith('/link?')) {
+          url = `https://weixin.sogou.com${url}`;
+        }
+
+        if (title && url && url.includes('sogou')) {
+          searchItems.push({ title, url, summary, source: account, dateText });
+        }
       });
 
-      // 处理和过滤结果（最多3条）
-      for (const item of searchResults.slice(0, 3)) {
+      logger.info(`[WechatSearch] 搜索页解析完成`, { page: pageNum, found: searchItems.length });
+
+      // 处理和过滤结果
+      for (const item of searchItems) {
         if (!item.title) continue;
 
         // 检查是否包含医院名称
@@ -390,18 +533,28 @@ export class WechatSearchClient extends NewsSourceClient {
         // 检查是否为医疗相关
         const isMedicalNews = this.isMedicalNews(item.title, item.summary);
 
-        // 微信内容通常质量较高，如果包含医院名或医疗关键词就保留
-        if (!containsHospital && !isMedicalNews) continue;
+        // 检查是否匹配搜索关键词（科室/医生/关键词）
+        const matchesTerms = this.matchesSearchTerms(item.title, item.summary, departments, doctors, keywords);
+
+        // 微信内容通常质量较高，如果包含医院名、医疗关键词或匹配搜索词就保留
+        if (!containsHospital && !isMedicalNews && !matchesTerms) continue;
 
         // 解析日期
         const publishedAt = this.parseDate(item.dateText);
         if (publishedAt < cutoffDate) continue;
 
         // 计算相关性分数（微信文章通常更聚焦）
-        const relevanceScore = containsHospital ? 80 : (isMedicalNews ? 45 : 25);
+        let relevanceScore = 25;
+        if (containsHospital) relevanceScore = 80;
+        else if (matchesTerms) relevanceScore = 60;
+        else if (isMedicalNews) relevanceScore = 45;
 
-        // 搜狗链接需要特殊处理（会跳转）
-        const originalUrl = this.resolveWechatUrl(item.url);
+        // 使用增强版解析搜狗链接
+        const originalUrl = await this.resolveSogouLinkEnhanced(item.url);
+        if (!originalUrl) {
+          logger.warn(`[WechatSearch] 无法解析搜狗链接: ${item.url}`);
+          continue;
+        }
 
         results.push({
           id: this.generateId('wechat', item.title),
@@ -422,10 +575,12 @@ export class WechatSearchClient extends NewsSourceClient {
           hospitalMentions: hospitalNames.filter(name => item.title.includes(name)),
         });
 
-        if (results.length >= Math.min(maxResults || 3, 3)) break;
+        if (results.length >= targetResults) break;
       }
-    } finally {
-      await browser.close();
+
+      if (pageNum < maxPages) {
+        await new Promise(r => setTimeout(r, 5000 + Math.random() * 3000));
+      }
     }
 
     return results;
@@ -489,10 +644,34 @@ export class WechatSearchClient extends NewsSourceClient {
       '医院', '医疗', '医生', '患者', '疾病', '治疗', '手术',
       '药物', '疫苗', '医保', '医药', '临床', '科室',
       '专家', '院士', '主任医师', '医疗器械', '健康',
-      '门诊', '住院', '护理', '诊断',
+      '门诊', '住院', '护理', '诊断', '医学', '病症',
+      '血液', '肿瘤', '心脏', '神经', '骨科', '儿科',
+      '妇产', '眼科', '耳鼻喉', '口腔', '皮肤', '精神',
+      '康复', '急诊', '传染', '结核', '肝炎', '癌症',
+      '移植', '透析', '放疗', '化疗', '靶向', '免疫',
     ];
     const text = `${title} ${summary || ''}`.toLowerCase();
     return medicalKeywords.some(kw => text.includes(kw));
+  }
+
+  /**
+   * 检查是否匹配搜索关键词（科室、医生、用户关键词）
+   */
+  private matchesSearchTerms(
+    title: string,
+    summary: string | undefined,
+    departments?: string[],
+    doctors?: string[],
+    keywords?: string
+  ): boolean {
+    const text = (title + ' ' + (summary || '')).toLowerCase();
+    const terms = [
+      ...(departments || []),
+      ...(doctors || []),
+      ...(keywords ? [keywords] : []),
+    ];
+    if (terms.length === 0) return false;
+    return terms.some(term => text.includes(term.toLowerCase()));
   }
 
   /**
@@ -874,12 +1053,6 @@ export class WechatSearchClient extends NewsSourceClient {
         .replace(/\s+/g, ' ')
         .trim();
 
-      // 限制长度，避免过大
-      const MAX_CONTENT_LENGTH = 10000;
-      if (content.length > MAX_CONTENT_LENGTH) {
-        content = content.substring(0, MAX_CONTENT_LENGTH) + '...';
-      }
-
       const result: WechatArticleContent = {
         content,
         fetchedAt: new Date().toISOString(),
@@ -965,7 +1138,7 @@ export class WechatSearchClient extends NewsSourceClient {
 
       const batchPromises = batch.map(async (item) => {
         // 获取真实URL
-        const realUrl = await this.resolveRealWechatUrl(item.originalUrl);
+        const realUrl = await this.resolveSogouLinkEnhanced(item.originalUrl);
         if (!realUrl) {
           return { ...item, content: undefined };
         }
@@ -990,5 +1163,10 @@ export class WechatSearchClient extends NewsSourceClient {
     }
 
     return results;
+  }
+
+  private delay(minMs: number, maxMs: number): Promise<void> {
+    const delay = minMs + Math.random() * (maxMs - minMs);
+    return new Promise(resolve => setTimeout(resolve, delay));
   }
 }

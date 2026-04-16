@@ -140,10 +140,14 @@ export class HospitalSelfNewsClient extends NewsSourceClient {
 
           const absoluteUrl = this.resolveUrl(link, newsUrl);
 
+          const content = $(element).text().trim();
+          const summary = content.slice(0, 200);
+
           newsItems.push({
             id: this.generateId('hospital_self', title),
             title,
-            summary: $(element).find('.summary, .desc, p').text().trim().slice(0, 200),
+            summary,
+            content,
             source: {
               name: `${hospitalName}官网`,
               type: NewsSourceType.HOSPITAL_SELF,

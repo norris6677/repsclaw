@@ -10,6 +10,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { createLogger } from '../utils/plugin-logger';
+import { serializeFrontmatter, parseFrontmatter, sanitizeFilename } from '../utils/markdown-frontmatter';
 import type { ISubscriptionDatabase, HospitalSubscriptionDB, DoctorSubscriptionDB } from './subscription-db.interface';
 import {
   BASE_DATA_DIR,
@@ -31,148 +32,6 @@ interface ParsedMarkdown {
 }
 
 /**
- * Parse YAML frontmatter from markdown content
- */
-function parseFrontmatter(content: string): ParsedMarkdown {
-  const frontmatterRegex = /^---\s*\n([\s\S]*?)\n---\s*\n?/;
-  const match = content.match(frontmatterRegex);
-
-  if (!match) {
-    return { frontmatter: {}, content };
-  }
-
-  const yamlContent = match[1];
-  const frontmatter: ParsedFrontmatter = {};
-
-  // Simple YAML parser for basic types
-  const lines = yamlContent.split('\n');
-  let currentKey: string | null = null;
-  let currentArray: string[] = [];
-  let isInArray = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Array item
-    if (trimmed.startsWith('- ')) {
-      if (isInArray && currentKey) {
-        currentArray.push(trimmed.substring(2).trim());
-      }
-      continue;
-    }
-
-    // If we were in an array, save it
-    if (isInArray && currentKey) {
-      frontmatter[currentKey] = currentArray;
-      currentArray = [];
-      isInArray = false;
-    }
-
-    // Key-value pair
-    const colonIndex = trimmed.indexOf(':');
-    if (colonIndex > 0) {
-      const key = trimmed.substring(0, colonIndex).trim();
-      let value = trimmed.substring(colonIndex + 1).trim();
-
-      // Check if next non-empty line starts with "-" (array start)
-      const nextLines = lines.slice(lines.indexOf(line) + 1);
-      const nextNonEmpty = nextLines.find(l => l.trim());
-      if (nextNonEmpty?.trim().startsWith('- ')) {
-        isInArray = true;
-        currentKey = key;
-        continue;
-      }
-
-      // Parse value
-      if (value === '' || value === 'null' || value === '~') {
-        frontmatter[key] = null;
-      } else if (value === 'true') {
-        frontmatter[key] = true;
-      } else if (value === 'false') {
-        frontmatter[key] = false;
-      } else if (value === '[]') {
-        frontmatter[key] = [];
-      } else if (/^\d+$/.test(value)) {
-        frontmatter[key] = parseInt(value, 10);
-      } else if (/^\d+\.\d+$/.test(value)) {
-        frontmatter[key] = parseFloat(value);
-      } else if ((value.startsWith('"') && value.endsWith('"')) ||
-                 (value.startsWith("'") && value.endsWith("'"))) {
-        // Remove quotes and unescape
-        frontmatter[key] = value.slice(1, -1).replace(/\\"/g, '"');
-      } else {
-        frontmatter[key] = value;
-      }
-    }
-  }
-
-  // Handle trailing array
-  if (isInArray && currentKey) {
-    frontmatter[currentKey] = currentArray;
-  }
-
-  const remainingContent = content.substring(match[0].length);
-
-  return { frontmatter, content: remainingContent };
-}
-
-/**
- * Serialize frontmatter to YAML format
- */
-function serializeFrontmatter(data: ParsedFrontmatter): string {
-  const lines: string[] = ['---'];
-
-  for (const [key, value] of Object.entries(data)) {
-    if (value === null || value === undefined) {
-      lines.push(`${key}:`);
-    } else if (Array.isArray(value)) {
-      if (value.length === 0) {
-        lines.push(`${key}: []`);
-      } else {
-        lines.push(`${key}:`);
-        for (const item of value) {
-          lines.push(`  - ${item}`);
-        }
-      }
-    } else if (typeof value === 'boolean') {
-      lines.push(`${key}: ${value}`);
-    } else if (typeof value === 'number') {
-      lines.push(`${key}: ${value}`);
-    } else if (typeof value === 'string') {
-      // Check if it's a JSON string (starts with { or [)
-      if (value.startsWith('{') || value.startsWith('[')) {
-        // JSON strings need to be quoted
-        const escaped = value.replace(/"/g, '\\"');
-        lines.push(`${key}: "${escaped}"`);
-      } else if (value.includes(':') || value.includes('#') || value.includes('"') ||
-          value.includes('\'') || value.includes('\n') || value.startsWith(' ') || value.endsWith(' ')) {
-        // Escape special characters
-        const escaped = value.replace(/"/g, '\\"');
-        lines.push(`${key}: "${escaped}"`);
-      } else {
-        lines.push(`${key}: ${value}`);
-      }
-    } else if (typeof value === 'object') {
-      lines.push(`${key}: ${JSON.stringify(value)}`);
-    }
-  }
-
-  lines.push('---');
-  return lines.join('\n');
-}
-
-/**
- * Sanitize filename for filesystem
- */
-function sanitizeFilename(name: string): string {
-  // Replace invalid characters with underscore
-  return name
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/\s+/g, '_')
-    .substring(0, 100);
-}
-
-/**
  * Markdown-based subscription database implementation
  */
 export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
@@ -188,10 +47,47 @@ export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
     this.doctorsDir = DOCTORS_DIR;
     this.newsDir = NEWS_DIR;
 
+    // 自动迁移旧目录结构（如果存在 data/hospitals/ 但没有 data/subscriptions/hospitals/）
+    this.migrateLegacyDirectories();
+
     // Ensure directories exist
     ensureDataDirectories();
 
     logger.info('MarkdownSubscriptionDatabase initialized', { baseDir: this.baseDir });
+  }
+
+  /**
+   * 自动迁移旧的目录结构到新的 subscriptions 目录
+   */
+  private migrateLegacyDirectories(): void {
+    const legacyHospitalsDir = path.join(this.baseDir, 'hospitals');
+    const legacyDoctorsDir = path.join(this.baseDir, 'doctors');
+    const legacyNewsDir = path.join(this.baseDir, 'news');
+
+    const migrations: Array<[string, string, string]> = [
+      ['hospitals', legacyHospitalsDir, this.hospitalsDir],
+      ['doctors', legacyDoctorsDir, this.doctorsDir],
+      ['news', legacyNewsDir, this.newsDir],
+    ];
+
+    for (const [label, legacyDir, newDir] of migrations) {
+      if (fs.existsSync(legacyDir) && !fs.existsSync(newDir)) {
+        fs.mkdirSync(newDir, { recursive: true });
+        const files = fs.readdirSync(legacyDir);
+        let moved = 0;
+        for (const file of files) {
+          const src = path.join(legacyDir, file);
+          const dest = path.join(newDir, file);
+          fs.renameSync(src, dest);
+          moved++;
+        }
+        // Remove empty legacy directory
+        if (fs.readdirSync(legacyDir).length === 0) {
+          fs.rmdirSync(legacyDir);
+        }
+        logger.info(`Migrated legacy ${label} directory`, { from: legacyDir, to: newDir, moved });
+      }
+    }
   }
 
   private getHospitalFilePath(name: string): string {
@@ -203,6 +99,8 @@ export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
   }
 
   private getNewsFilePath(hospitalName: string, newsId: string, publishedAt: string): string {
+    const safeHospitalName = hospitalName || 'unknown';
+    const safeNewsId = newsId || 'unknown';
     const date = publishedAt ? publishedAt.split('T')[0] : new Date().toISOString().split('T')[0];
     const dateDir = path.join(this.newsDir, date);
 
@@ -210,7 +108,7 @@ export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
       fs.mkdirSync(dateDir, { recursive: true });
     }
 
-    return path.join(dateDir, `${sanitizeFilename(hospitalName)}_${sanitizeFilename(newsId)}.md`);
+    return path.join(dateDir, `${sanitizeFilename(safeHospitalName)}_${sanitizeFilename(safeNewsId)}.md`);
   }
 
   private readMarkdownFile(filePath: string): ParsedMarkdown | null {
@@ -218,8 +116,9 @@ export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
       if (!fs.existsSync(filePath)) {
         return null;
       }
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return parseFrontmatter(content);
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
+      const { frontmatter, body } = parseFrontmatter(fileContent);
+      return { frontmatter, content: body };
     } catch (error) {
       logger.error('Error reading markdown file', { filePath, error });
       return null;
@@ -728,9 +627,15 @@ export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
 
   cacheNews(items: any[]): void {
     for (const item of items) {
+      if (!item || !item.id) {
+        logger.warn('Skipping cache for item without id', { item });
+        continue;
+      }
+
+      const hospitalName = item.hospitalName || item.hospital || 'unknown';
       const frontmatter = {
         id: item.id,
-        hospitalName: item.hospitalName || item.hospital,
+        hospitalName,
         sourceType: item.source?.type || item.sourceType,
         title: item.title,
         summary: item.summary,
@@ -744,12 +649,12 @@ export class MarkdownSubscriptionDatabase implements ISubscriptionDatabase {
       };
 
       const filePath = this.getNewsFilePath(
-        item.hospitalName || item.hospital,
+        hospitalName,
         item.id,
         item.publishedAt
       );
 
-      const content = `# ${item.title}\n\n## 摘要\n\n${item.summary}\n\n## 链接\n\n[原文链接](${item.originalUrl})\n\n## 元数据\n\n- 来源: ${item.source?.name || item.sourceType}\n- 发布于: ${item.publishedAt}\n- 相关度: ${item.relevanceScore}\n- 情感: ${item.sentiment}\n`;
+      const content = `# ${item.title || '无标题'}\n\n## 摘要\n\n${item.summary || ''}\n\n## 链接\n\n[原文链接](${item.originalUrl || ''})\n\n## 元数据\n\n- 来源: ${item.source?.name || item.sourceType || 'unknown'}\n- 发布于: ${item.publishedAt || ''}\n- 相关度: ${item.relevanceScore || 0}\n- 情感: ${item.sentiment || 'neutral'}\n`;
 
       this.writeMarkdownFile(filePath, frontmatter, content);
     }

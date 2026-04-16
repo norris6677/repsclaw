@@ -20,11 +20,17 @@ import { registerMedRxivTools } from './src/domains/query/medrxiv';
 import { registerNCIBookshelfTools } from './src/domains/query/nci-bookshelf';
 import { registerHospitalNewsTools } from './src/domains/query/hospital-news';
 import { registerAllSubscriptionTools } from './src/domains/subscription';
+import { registerKnowledgeCollectionTools } from './src/domains/query/knowledge-collection';
 import { registerHospitalNewsDigestWorkflow } from './src/orchestration/workflows/hospital-news-digest';
 import { HealthAPIService } from './src/integrations/api/health-api.service';
 import { HospitalSubscriptionService } from './src/services/hospital-subscription.service';
 import { HospitalNewsService } from './src/services/hospital-news/hospital-news.service';
 import { DoctorSubscriptionService } from './src/services/doctor-subscription.service';
+import { KnowledgeCollectionService } from './src/services/knowledge-collection/knowledge-collection.service';
+import { RawSourceManager, rawSourceManager } from './src/services/knowledge-collection/raw-source.manager';
+import { CollectionProgressService, collectionProgressService } from './src/services/knowledge-collection/collection-progress.service';
+import { AgentStrategyService } from './src/services/knowledge-collection/agent-strategy.service';
+import { createLLMClient } from './src/services/llm-client';
 import type { OpenClawAPI } from './src/types/openclaw.types';
 
 pluginLogger.lifecycle('loading', {
@@ -46,8 +52,9 @@ const plugin = {
   subscriptionService: null as HospitalSubscriptionService | null,
   hospitalNewsService: null as HospitalNewsService | null,
   doctorSubscriptionService: null as DoctorSubscriptionService | null,
+  knowledgeCollectionService: null as KnowledgeCollectionService | null,
 
-  register(api: OpenClawAPI) {
+  register: (api: OpenClawAPI) => {
     pluginLogger.lifecycle('registering');
 
     const apiCapabilities = {
@@ -66,31 +73,40 @@ const plugin = {
       throw new Error('Repsclaw: API logger is required');
     }
 
-    this.healthAPI = new HealthAPIService({
+    plugin.healthAPI = new HealthAPIService({
       fda: { apiKey: process.env.FDA_API_KEY },
       pubmed: { apiKey: process.env.PUBMED_API_KEY || process.env.NCBI_API_KEY },
       nciBookshelf: { apiKey: process.env.NCBI_API_KEY },
     });
 
-    this.subscriptionService = new HospitalSubscriptionService();
-    this.hospitalNewsService = new HospitalNewsService();
-    this.doctorSubscriptionService = new DoctorSubscriptionService(
-      this.subscriptionService
+    plugin.subscriptionService = new HospitalSubscriptionService();
+    plugin.hospitalNewsService = new HospitalNewsService(undefined, createLLMClient(api));
+    plugin.doctorSubscriptionService = new DoctorSubscriptionService(
+      plugin.subscriptionService
     );
+
+    // 初始化知识采集服务
+    plugin.knowledgeCollectionService = new KnowledgeCollectionService(
+      rawSourceManager,
+      undefined,
+      collectionProgressService
+    );
+    const llmClient = createLLMClient(api);
+    plugin.knowledgeCollectionService.setAgentStrategyService(new AgentStrategyService(llmClient));
 
     api.logger.info('🩺 Repsclaw plugin initializing...');
 
-    this.registerMetaTools();
-    this.registerDomainTools();
-    this.registerWorkflows();
-    this.registerToOpenClaw(api);
-    this.registerRoutes(api);
+    plugin.registerMetaTools();
+    plugin.registerDomainTools();
+    plugin.registerWorkflows();
+    plugin.registerToOpenClaw(api);
+    plugin.registerRoutes(api);
 
     pluginLogger.lifecycle('registered');
     api.logger.info('✅ Repsclaw plugin registered successfully');
   },
 
-  registerMetaTools() {
+  registerMetaTools: () => {
     const execContext = registry.createContext();
 
     registry.register(
@@ -123,38 +139,43 @@ const plugin = {
     pluginLogger.info('Meta tools registered');
   },
 
-  registerDomainTools() {
-    if (!this.healthAPI || !this.subscriptionService) {
+  registerDomainTools: () => {
+    if (!plugin.healthAPI || !plugin.subscriptionService) {
       throw new Error('Services not initialized');
     }
 
-    registerFDATools({ healthAPI: this.healthAPI });
+    registerFDATools({ healthAPI: plugin.healthAPI });
     registerClinicalTrialsTools();
-    registerPubMedTools({ healthAPI: this.healthAPI });
-    registerICD10Tools({ healthAPI: this.healthAPI });
-    registerMedRxivTools({ healthAPI: this.healthAPI });
-    registerNCIBookshelfTools({ healthAPI: this.healthAPI });
-    registerHospitalNewsTools({ hospitalNewsService: this.hospitalNewsService! });
+    registerPubMedTools({ healthAPI: plugin.healthAPI });
+    registerICD10Tools({ healthAPI: plugin.healthAPI });
+    registerMedRxivTools({ healthAPI: plugin.healthAPI });
+    registerNCIBookshelfTools({ healthAPI: plugin.healthAPI });
+    registerHospitalNewsTools({ hospitalNewsService: plugin.hospitalNewsService! });
     registerAllSubscriptionTools({
-      subscriptionService: this.subscriptionService,
-      doctorSubscriptionService: this.doctorSubscriptionService!,
+      subscriptionService: plugin.subscriptionService,
+      doctorSubscriptionService: plugin.doctorSubscriptionService!,
+    });
+
+    registerKnowledgeCollectionTools({
+      collectionService: plugin.knowledgeCollectionService!,
+      rawSourceManager,
     });
 
     pluginLogger.info('Domain tools registered');
   },
 
-  registerWorkflows() {
-    if (!this.subscriptionService || !this.doctorSubscriptionService) return;
+  registerWorkflows: () => {
+    if (!plugin.subscriptionService || !plugin.doctorSubscriptionService) return;
 
     registerHospitalNewsDigestWorkflow(
-      this.subscriptionService,
-      this.doctorSubscriptionService
+      plugin.subscriptionService,
+      plugin.doctorSubscriptionService
     );
 
     pluginLogger.info('Workflows registered');
   },
 
-  registerToOpenClaw(api: OpenClawAPI) {
+  registerToOpenClaw: (api: OpenClawAPI) => {
     const allTools = registry.getAllTools();
 
     for (const tool of allTools) {
@@ -184,7 +205,7 @@ const plugin = {
     pluginLogger.info(`Total tools registered: ${allTools.length}`);
   },
 
-  registerRoutes(api: OpenClawAPI) {
+  registerRoutes: (api: OpenClawAPI) => {
     // Health check routes
     api.registerHttpRoute({
       path: '/api/repsclaw',
@@ -230,6 +251,14 @@ const plugin = {
         return true;
       },
     });
+
+    // 注册采集进度 SSE 路由
+    try {
+      const { registerCollectionProgressRoutes } = require('./src/routes/collection-progress.routes');
+      registerCollectionProgressRoutes(api);
+    } catch (error) {
+      pluginLogger.warn('Collection progress routes registration failed', { error });
+    }
 
     pluginLogger.info('HTTP routes registered');
   },
