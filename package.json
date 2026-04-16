@@ -1,6 +1,6 @@
 {
   "name": "repsclaw",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "OpenClaw Plugin System - RAG, Compliance & Crawler Services",
   "main": "index.ts",
   "scripts": {
